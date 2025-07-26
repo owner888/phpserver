@@ -1,0 +1,10 @@
+*.log
+.github/
+!.gitkeep
+.gitlab-ci.yml
+.env
+.env.local
+.undodir
+*.pid
+.DS_Store
+.codeassistant_config.json
