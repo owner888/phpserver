@@ -27,17 +27,6 @@ if (!class_exists('EventBase'))
     exit("Class EventBase() is not available.");
 }
 
-// 创建 EventBase 实例
-try 
-{
-    $base = new EventBase();
-} 
-catch (Exception $e) 
-{
-    die("Failed to create EventBase: " . $e->getMessage());
-}
-$base->free();
-
 $worker = new Worker();
 
 switch ($command) {
