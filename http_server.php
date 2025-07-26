@@ -1,7 +1,8 @@
 <?php
 
-require_once __DIR__.'/Logger.php';
-require_once __DIR__.'/HttpParser.php';
+require_once __DIR__ . '/Logger.php';
+require_once __DIR__ . '/HttpParser.php';
+require_once __DIR__ . '/Connection.php';
 
 // ab 测试
 // ab -n100000 -c100 -k http://127.0.0.1:2345/
@@ -62,6 +63,7 @@ class Worker
     private $connectionLastActive = []; // 记录连接最后活跃时间
     private $logger;
     private $httpParser;
+    private $connections = []; // 用于管理所有 Connection 实例
 
     public function __construct($logger, $httpParser)
     {
@@ -340,7 +342,9 @@ class Worker
             );
             // 添加事件
             $event->add();
-            $this->connectionEvents[(int)$newSocket] = $event;
+            // $this->connectionEvents[(int)$newSocket] = $event;
+            $connection = new Connection($newSocket, $event);
+            $this->connections[$connection->id] = $connection;
         } catch (\Throwable $e) {
             $this->logger->log("acceptConnect异常: " . $e->getMessage());
         }
@@ -355,8 +359,12 @@ class Worker
     public function acceptData($newSocket, $events, $args)
     {
         try {
-            $socketId = (int)$newSocket;
-            $this->connectionLastActive[$socketId] = time(); // 更新连接最后活跃时间
+            // $id = (int)$newSocket;
+            // $this->connectionLastActive[$id] = time(); // 更新连接最后活跃时间
+            $id = (int)$newSocket;
+            if (!isset($this->connections[$id])) return;
+            $connection = $this->connections[$id];
+            $connection->updateActive();
             $this->newSocket = $newSocket; // 保存新连接的socket
             // http 服务器（HTTP1.1 默认使用 keep-alive 保持连接）
             // 限制最大请求体 2MB
@@ -367,19 +375,21 @@ class Worker
             //     @fclose($newSocket);
             //     return;
             // }
+
             // HTTP 服务器
             $buffer = @fread($newSocket, 65535); //获取数据
             $this->logger->log("获取客户端数据:{$buffer}");
+            
             if ($buffer === '' || $buffer === false) 
             {
                 if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
                 {
                     $this->logger->log("客户端关闭连接");
                     // 删除事件对象
-                    if (isset($this->connectionEvents[$socketId])) 
+                    if (isset($this->connectionEvents[$id])) 
                     {
-                        $this->connectionEvents[$socketId]->del();
-                        unset($this->connectionEvents[$socketId]);
+                        $this->connectionEvents[$id]->del();
+                        unset($this->connectionEvents[$id]);
                     }
                     @fclose($newSocket); // 关闭连接
                     $this->connectionCount--;
