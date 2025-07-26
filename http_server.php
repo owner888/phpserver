@@ -1,5 +1,8 @@
 <?php
 
+require_once __DIR__.'/Logger.php';
+require_once __DIR__.'/HttpParser.php';
+
 // ab 测试
 // ab -n100000 -c100 -k http://127.0.0.1:2345/
 
@@ -27,7 +30,7 @@ if (!class_exists('EventBase'))
     exit("Class EventBase() is not available.");
 }
 
-$worker = new Worker();
+$worker = new Worker(new Logger(), new HttpParser());
 
 switch ($command) {
     case 'start':
@@ -57,9 +60,14 @@ class Worker
     private $requestNum = 0; //每个子进程总请求数
     private $connectionEvents = []; // 保存连接事件
     private $connectionLastActive = []; // 记录连接最后活跃时间
+    private $logger;
+    private $httpParser;
 
-    public function __construct()
+    public function __construct($logger, $httpParser)
     {
+        $this->logger = $logger;
+        $this->httpParser = $httpParser;
+
         if (!$this->onMessage) 
         {
             // 默认处理
@@ -71,14 +79,6 @@ class Worker
                 $connection->sendData("hello world \n");
             };
         }
-    }
-
-    private function log($msg)
-    {
-        return;
-        $time = date('Y-m-d H:i:s');
-        file_put_contents('worker.log', "[{$time}] {$msg}\n", FILE_APPEND);
-        echo "[{$time}] {$msg}\n"; // 同时输出到控制台
     }
 
     /**
@@ -135,7 +135,7 @@ class Worker
             pcntl_signal_dispatch();
             if ($pid > 0) {
                 // 子进程退出
-                $this->log("子进程退出pid: {$pid}, 状态: {$status}");
+                $this->logger->log("子进程退出pid: {$pid}, 状态: {$status}");
                 unset($this->forkArr[$pid]);
                 // 关闭还是重启
                 if (!$this->masterStop) 
@@ -143,23 +143,23 @@ class Worker
                     // 如果子进程退出状态为 0，表示正常退出
                     if (pcntl_wifexited($status) && pcntl_wexitstatus($status) == 0) 
                     {
-                        $this->log("子进程正常退出，重启一个新子进程");
+                        $this->logger->log("子进程正常退出，重启一个新子进程");
                     } 
                     else 
                     {
-                        $this->log("子进程异常退出，重启一个新子进程");
+                        $this->logger->log("子进程异常退出，重启一个新子进程");
                     }
                     // 重启
                     $this->fork();
                 } else {
-                    $this->log("主进程已停止，子进程退出");
+                    $this->logger->log("主进程已停止，子进程退出");
                 }
             } else {
                 // 主进程退出状态并且没有子进程时退出
                 if ($this->masterStop && empty($this->forkArr)) {
                     unlink($this->masterPidFile);
                     fclose($this->socket);
-                    $this->log("主进程退出");
+                    $this->logger->log("主进程退出");
                     exit(0);
                 }
             }
@@ -176,7 +176,7 @@ class Worker
             case SIGINT:
                 // 退出，先发送子进程信号关闭子进程，再等待主进程退出
                 foreach ($this->forkArr as $pid) {
-                    $this->log("优雅关闭子进程pid: {$pid}");
+                    $this->logger->log("优雅关闭子进程pid: {$pid}");
                     posix_kill($pid, SIGKILL);
                 }
                 $this->masterStop = 1; // 将主进程状态置成退出
@@ -184,12 +184,12 @@ class Worker
             case SIGUSR1:
                 // 重启，关闭当前存在但子进程，主进程会监视退出的子进程并重启一个新子进程
                 foreach ($this->forkArr as $pid) {
-                    $this->log("关闭子进程pid: {$pid}");
+                    $this->logger->log("关闭子进程pid: {$pid}");
                     posix_kill($pid, SIGKILL);
                 }
                 break;
             case SIGUSR2:
-                $this->log("将状态信息保存至文件: {$this->masterStatusFile}");
+                $this->logger->log("将状态信息保存至文件: {$this->masterStatusFile}");
                 // 将状态信息保存至文件
                 $str = "---------------------STATUS---------------------\n";
                 $str .= 'PHP version:' . PHP_VERSION . "\n";
@@ -220,7 +220,7 @@ class Worker
                   
             // 子进程注册 SIGTERM 信号
             pcntl_signal(SIGTERM, function() {
-                $this->log("子进程收到 SIGTERM，准备优雅退出");
+                $this->logger->log("子进程收到 SIGTERM，准备优雅退出");
                 // 清理资源
                 foreach ($this->connectionEvents as $event) {
                     $event->del();
@@ -240,7 +240,7 @@ class Worker
             //     -1,
             //     Event::TIMEOUT | Event::PERSIST,
             //     function() {
-            //         $this->log("当前连接数: {$this->connectionCount}, 总请求数: {$this->requestNum}");
+            //         $this->logger->log("当前连接数: {$this->connectionCount}, 总请求数: {$this->requestNum}");
             //     }
             // );
             // $statEvent->add(5); // 每5秒输出一次
@@ -258,7 +258,7 @@ class Worker
                             }
                             // 关闭socket
                             // 这里假设你有保存socket对象，可以用 $id 找到
-                            $this->log("连接超时关闭: $id");
+                            $this->logger->log("连接超时关闭: $id");
                             $this->connectionCount--;
                             unset($this->connectionLastActive[$id]);
                         }
@@ -287,7 +287,7 @@ class Worker
             }
         } else {
             // 主进程将子进程pid保存到数组
-            $this->log("创建子进程pid: {$pid}");
+            $this->logger->log("创建子进程pid: {$pid}");
             $this->forkArr[$pid] = $pid;
         }
     }
@@ -310,7 +310,7 @@ class Worker
 
             if ($this->connectionCount >= $this->maxConnections) 
             {
-                $this->log("连接数达到上限，拒绝新连接");
+                $this->logger->log("连接数达到上限，拒绝新连接");
                 @fclose($newSocket);
                 return;
             }
@@ -318,7 +318,7 @@ class Worker
             // 记录连接最后活跃时间
             $this->connectionLastActive[(int)$newSocket] = time();
 
-            $this->log("acceptConnect");
+            $this->logger->log("acceptConnect");
             $this->connectionCount++;
 
             stream_set_blocking($newSocket, 0);
@@ -342,7 +342,7 @@ class Worker
             $event->add();
             $this->connectionEvents[(int)$newSocket] = $event;
         } catch (\Throwable $e) {
-            $this->log("acceptConnect异常: " . $e->getMessage());
+            $this->logger->log("acceptConnect异常: " . $e->getMessage());
         }
     }
 
@@ -362,19 +362,19 @@ class Worker
             // 限制最大请求体 2MB
             // $buffer = @fread($newSocket, 2 * 1024 * 1024);
             // if (strlen($buffer) > 2 * 1024 * 1024) {
-            //     $this->log("请求体过大，已拒绝");
+            //     $this->logger->log("请求体过大，已拒绝");
             //     fwrite($newSocket, "HTTP/1.1 413 Payload Too Large\r\n\r\n");
             //     @fclose($newSocket);
             //     return;
             // }
             // HTTP 服务器
             $buffer = @fread($newSocket, 65535); //获取数据
-            $this->log("获取客户端数据:{$buffer}");
+            $this->logger->log("获取客户端数据:{$buffer}");
             if ($buffer === '' || $buffer === false) 
             {
                 if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
                 {
-                    $this->log("客户端关闭连接");
+                    $this->logger->log("客户端关闭连接");
                     // 删除事件对象
                     if (isset($this->connectionEvents[$socketId])) 
                     {
@@ -396,7 +396,7 @@ class Worker
             // {
             //     if (feof($newSocket) || !is_resource($newSocket) || $buffer === false)
             //     {
-            //         $this->log("客户端关闭连接");
+            //         $this->logger->log("客户端关闭连接");
             //         // 删除事件对象
             //         if (isset($this->connectionEvents[$socketId]))
             //         {
@@ -408,12 +408,12 @@ class Worker
             // }
             // else
             // {
-            //     $this->log("获取客户端数据: " . $buffer);
+            //     $this->logger->log("获取客户端数据: " . $buffer);
             //     // 直接发送数据
             //     fwrite($newSocket, "hello client\n");
             // }
         } catch (\Throwable $e) {
-            $this->log("acceptData异常: " . $e->getMessage());
+            $this->logger->log("acceptData异常: " . $e->getMessage());
         }
     }
 
@@ -585,7 +585,7 @@ class Worker
             $allowedTypes = ['image/jpeg', 'image/png', 'application/pdf'];
             $maxSize = 2 * 1024 * 1024; // 2MB
             if (!in_array($value['type'], $allowedTypes) || $value['size'] > $maxSize) {
-                $this->log("非法文件上传: {$value['name']} 类型: {$value['type']} 大小: {$value['size']}");
+                $this->logger->log("非法文件上传: {$value['name']} 类型: {$value['type']} 大小: {$value['size']}");
                 return; // 不保存非法文件
             }
         }
@@ -595,7 +595,7 @@ class Worker
         }
         // 如果名称是空字符串，则不处理
         if ($name === '') {
-            $this->log("空字段名称，跳过处理");
+            $this->logger->log("空字段名称，跳过处理");
             return;
         }
         // 如果名称是数字，则转换为字符串
@@ -664,13 +664,13 @@ class Worker
                     posix_kill($masterPid, SIGUSR2);
                     sleep(1); // 等待主进程将状态信息放入文件
                     $masterStatus = file_get_contents($this->masterStatusFile);
-                    $this->log($masterStatus);
+                    $this->logger->log($masterStatus);
                     unlink($this->masterStatusFile);
                     break;
             }
             exit;
         } else {
-            $this->log("主进程不存在或已停止");
+            $this->logger->log("主进程不存在或已停止");
             exit;
         }
     }
