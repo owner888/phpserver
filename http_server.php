@@ -1,5 +1,8 @@
 <?php
 
+// ab 测试
+// ab -n100000 -c100 -k http://127.0.0.1:2345/
+
 // 解析命令
 $command = trim($argv[1] ?? '');
 $available_commands = [
