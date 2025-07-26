@@ -52,9 +52,8 @@ class Worker
     
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
-    private $forkArr = []; // 子进程pid数组
-    private $socket = null; // 监听socket
-    private $newSocket = null; // 连接socket
+    private $forkArr = []; // 子进程 pid 数组
+    private $socket = null; // 监听 socket
     private $masterStop = 0; // 主进程是否停止
     private $maxConnections = 1024; // 最大连接数
     private $connectionCount = 0; //每个子进程到连接数
@@ -73,12 +72,12 @@ class Worker
         if (!$this->onMessage) 
         {
             // 默认处理
-            $this->onMessage = function($connection)
+            $this->onMessage = function($worker, $connection)
             {
                 // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
                 // var_dump($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['QUERY_STRING']);
                 // 发送数据给客户端
-                $connection->sendData("hello world \n");
+                $worker->sendData($connection, "hello world \n");
             };
         }
     }
@@ -342,7 +341,7 @@ class Worker
             );
             // 添加事件
             $event->add();
-            // $this->connectionEvents[(int)$newSocket] = $event;
+
             $connection = new Connection($newSocket, $event);
             $this->connections[$connection->id] = $connection;
         } catch (\Throwable $e) {
@@ -359,13 +358,10 @@ class Worker
     public function acceptData($newSocket, $events, $args)
     {
         try {
-            // $id = (int)$newSocket;
-            // $this->connectionLastActive[$id] = time(); // 更新连接最后活跃时间
             $id = (int)$newSocket;
             if (!isset($this->connections[$id])) return;
             $connection = $this->connections[$id];
-            $connection->updateActive();
-            $this->newSocket = $newSocket; // 保存新连接的socket
+            $connection->updateActive();// 更新连接最后活跃时间
             // http 服务器（HTTP1.1 默认使用 keep-alive 保持连接）
             // 限制最大请求体 2MB
             // $buffer = @fread($newSocket, 2 * 1024 * 1024);
@@ -379,7 +375,7 @@ class Worker
             // HTTP 服务器
             $buffer = @fread($newSocket, 65535); //获取数据
             $this->logger->log("获取客户端数据:{$buffer}");
-            
+
             if ($buffer === '' || $buffer === false) 
             {
                 if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
@@ -398,7 +394,7 @@ class Worker
             }
             $this->requestNum++;
             $this->httpDecode($buffer); // http解码
-            call_user_func($this->onMessage, $this); // 调用处理函数
+            call_user_func_array($this->onMessage, [$this, $connection]); // 调用处理函数
 
             // TCP 服务器
             // $buffer = fread($newSocket, 1024);
@@ -432,9 +428,9 @@ class Worker
      * @param $sendBuffer
      * @return bool
      */
-    public function sendData($sendBuffer) {
+    public function sendData($connection, $sendBuffer) {
         $msg = $this->httpEncode($sendBuffer); // http编码
-        fwrite($this->newSocket, $msg, 8192);
+        fwrite($connection->socket, $msg, 8192);
         return true;
     }
 
