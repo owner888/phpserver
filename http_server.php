@@ -50,7 +50,7 @@ switch ($command) {
 
 class Worker
 {
-    public $count = 4; //子进程数
+    public $count = 4;  // 子进程数，2 最高, 可以达到 2W5; 4 低一点，2W4; 8 更低，只有 1W 多
     public $localSocket = 'tcp://0.0.0.0:2345'; // 监听地址
     public $onMessage = null; // 处理函数
     
