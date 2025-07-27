@@ -328,9 +328,7 @@ class Worker
                         if (!$connection->isActive() && !$this->testConnection($connection)) 
                         {
                             $this->logger->log("连接超时关闭: $id");
-                            $connection->close();
-                            unset($this->connections[$id]);
-                            $this->connectionCount--;
+                            $this->cleanupConnection($id);
                         }
                     }
                 }
@@ -341,10 +339,14 @@ class Worker
                 $base,
                 -1,
                 Event::TIMEOUT | Event::PERSIST, function() {
+                    $memoryUsage = memory_get_usage();
+                    $peakUsage = memory_get_peak_usage();
                     $this->logger->log(sprintf(
-                        "Memory usage: %s MB, Peak: %s MB",
-                        round(memory_get_usage() / 1024 / 1024, 2),
-                        round(memory_get_peak_usage() / 1024 / 1024, 2)
+                        "Memory: %sMB, Peak: %sMB, Connections: %d, Requests: %d", 
+                        round($memoryUsage/1024/1024, 2),
+                        round($peakUsage/1024/1024, 2),
+                        $this->connectionCount, 
+                        $this->requestNum
                     ));
                 }
             );
@@ -537,9 +539,7 @@ class Worker
                 if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
                 {
                     $this->logger->log("客户端关闭连接");
-                    $connection->close();
-                    unset($this->connections[$id]);
-                    $this->connectionCount--;
+                    $this->cleanupConnection($id);
                     return;
                 }
             }
@@ -641,6 +641,26 @@ class Worker
         {
             $this->logger->log("主进程不存在或已停止");
             exit;
+        }
+    }
+
+    /**
+     * 清理连接
+     * @param int $id 连接ID
+     */
+    // 这个方法用于在连接关闭时清理资源
+    // 例如在 acceptData 中检测到连接关闭时调用
+    // 或者在子进程退出时调用
+    // 也可以在主进程收到 SIGINT 信号时调用
+    // 例如在主进程收到 SIGINT 信号时调用 cleanupConnection
+    // 或者在子进程退出时调用 cleanupConnection
+    // 或者在子进程处理完请求后调用 cleanupConnection
+    private function cleanupConnection($id)
+    {
+        if (isset($this->connections[$id])) {
+            $this->connections[$id]->close();
+            unset($this->connections[$id]);
+            $this->connectionCount--;
         }
     }
 }
