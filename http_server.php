@@ -56,8 +56,8 @@ class Worker
     private $socket = null; // 监听 socket
     private $masterStop = 0; // 主进程是否停止
     private $maxConnections = 1024; // 最大连接数
-    private $connectionCount = 0; //每个子进程到连接数
-    private $requestNum = 0; //每个子进程总请求数
+    private $connectionCount = 0; // 每个子进程到连接数
+    private $requestNum = 0; // 每个子进程总请求数
     private $connectionEvents = []; // 保存连接事件
     private $connectionLastActive = []; // 记录连接最后活跃时间
     private $logger;
@@ -74,6 +74,7 @@ class Worker
             // 默认处理
             $this->onMessage = function($worker, $connection)
             {
+                $worker->logger->log("处理连接: {$connection->id}");
                 // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
                 // var_dump($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['QUERY_STRING']);
                 // 发送数据给客户端
@@ -129,10 +130,10 @@ class Worker
         // 主进程接受信号和监听子进程信号
         while(true)
         {
-            // sleep(1);
             pcntl_signal_dispatch(); // 信号分发
             $status = 0;
-            $pid = pcntl_wait($status, WUNTRACED); // 堵塞直至获取子进程退出或中断信号或调用一个信号处理器，或者没有子进程时返回错误
+            // 堵塞直至获取子进程退出或中断信号或调用一个信号处理器，或者没有子进程时返回错误
+            $pid = pcntl_wait($status, WUNTRACED); 
             pcntl_signal_dispatch();
             if ($pid > 0) {
                 // 子进程退出
@@ -141,6 +142,23 @@ class Worker
                 // 关闭还是重启
                 if (!$this->masterStop) 
                 {
+                    // 如果主进程没有停止，重启子进程
+                    $this->logger->log("主进程未停止，重启子进程");
+                    $this->logger->log("子进程退出状态: {$status}");
+                    // 检查子进程退出状态
+                    // pcntl_wifexited 检查子进程是否正常退出
+                    // pcntl_wexitstatus 获取子进程的退出状态码
+                    // 如果子进程异常退出，重启一个新子进程
+                    // 如果子进程是因为信号退出的，pcntl_wifsignaled
+                    // pcntl_wtermsig 获取子进程终止的信号编号
+                    // pcntl_wstopsig 获取子进程停止的信号编号
+                    // pcntl_wifstopped 检查子进程是否停止
+                    // pcntl_wifcontinued 检查子进程是否继续运行
+                    // pcntl_wifexited 检查子进程是否正常退出
+                    // pcntl_wexitstatus 获取子进程的退出状态码
+                    // pcntl_wifsignaled 检查子进程是否因为信号退出
+                    // pcntl_wtermsig 获取子进程终止的信号编号
+                    // pcntl_wstopsig 获取子进程停止的信号编号  
                     // 如果子进程退出状态为 0，表示正常退出
                     if (pcntl_wifexited($status) && pcntl_wexitstatus($status) == 0) 
                     {
@@ -168,25 +186,50 @@ class Worker
     }
 
     /**
-     * 主进程处理信号
-     * @param $sigNo
+     * 主进程信号处理函数
+     * @param int $sigNo
      */
+    // 处理 SIGINT, SIGUSR1, SIGUSR2 信号
+    // SIGINT: 退出，SIGUSR1: 重启，SIGUSR2: 保存状态信息
+    // 其他信号: 可以添加其他处理逻辑
+    // 例如 SIGTERM: 优雅退出，清理资源等
+    // 例如 SIGUSR2: 保存状态信息到文件
+    // 例如 SIGCHLD: 子进程退出时处理
+    // 例如 SIGPIPE: 忽略管道破裂信号
+    // 例如 SIGALRM: 定时器信号
+    // 例如 SIGHUP:  重新加载配置文件
+    // 例如 SIGQUIT: 退出并生成核心转储文件
+    // 例如 SIGTSTP: 暂停进程
+    // 例如 SIGCONT: 恢复暂停的进程
+    // 例如 SIGTTIN: 后台进程尝试读取终端时处理
+    // 例如 SIGTTOU: 后台进程尝试写入终端
+    // 例如 SIGXCPU: 进程超过 CPU 时间限制时处理
+    // 例如 SIGXFSZ: 进程超过文件大小限制时处理
+    // 例如 SIGPROF: 进程超过配置的 CPU 时间限制时处理
+    // 例如 SIGVTALRM: 进程超过虚拟时间限制时处理
+    // 例如 SIGWINCH: 窗口大小改变时处理
+    // 例如 SIGPOLL: 轮询事件发生时处理
     public function masterSignalHandler($sigNo)
     {
         switch ($sigNo) {
             case SIGINT:
                 // 退出，先发送子进程信号关闭子进程，再等待主进程退出
-                foreach ($this->forkArr as $pid) {
-                    $this->logger->log("优雅关闭子进程pid: {$pid}");
+                foreach ($this->forkArr as $pid) 
+                {
+                    $this->logger->log("优雅关闭子进程 pid: {$pid}");
                     posix_kill($pid, SIGKILL);
                 }
                 $this->masterStop = 1; // 将主进程状态置成退出
                 break;
             case SIGUSR1:
-                // 重启，关闭当前存在但子进程，主进程会监视退出的子进程并重启一个新子进程
-                foreach ($this->forkArr as $pid) {
-                    $this->logger->log("关闭子进程pid: {$pid}");
-                    posix_kill($pid, SIGKILL);
+                // 重启，优雅关闭所有子进程
+                foreach ($this->forkArr as $pid) 
+                {
+                    $this->logger->log("关闭子进程 pid: {$pid}");
+                    posix_kill($pid, SIGTERM); // 用 SIGTERM 而不是 SIGKILL
+                    // 这里可以使用 SIGKILL 强制关闭子进程，但不推荐，因为
+                    // SIGTERM 可以让子进程优雅退出，清理资源等
+                    // posix_kill($pid, SIGKILL); // 强制关闭子进程
                 }
                 break;
             case SIGUSR2:
@@ -198,7 +241,8 @@ class Worker
                 $str .= "---------------------PROCESS STATUS---------------------\n";
                 $str .= "pid\n";
 
-                foreach ($this->forkArr as $childPid) {
+                foreach ($this->forkArr as $childPid) 
+                {
                     $str .= $childPid."\n";
                 }
                 file_put_contents($this->masterStatusFile, $str);
@@ -219,9 +263,9 @@ class Worker
         } else if ($pid == 0) {
             // 以下代码在子进程中运行
                   
-            // 子进程注册 SIGTERM 信号
+            // 子进程注册优雅终止信号：SIGTERM
             pcntl_signal(SIGTERM, function() {
-                $this->logger->log("子进程收到 SIGTERM，准备优雅退出");
+                $this->logger->log("子进程收到 SIGTERM 准备优雅退出");
                 // 清理资源
                 foreach ($this->connectionEvents as $event) {
                     $event->del();
@@ -445,7 +489,8 @@ class Worker
     public function sendSignalToMaster($command)
     {
         $masterPid = file_get_contents($this->masterPidFile);
-        if ($masterPid) {
+        if ($masterPid) 
+        {
             switch ($command) {
                 case 'stop':
                     posix_kill($masterPid, SIGINT);
@@ -462,7 +507,9 @@ class Worker
                     break;
             }
             exit;
-        } else {
+        } 
+        else 
+        {
             $this->logger->log("主进程不存在或已停止");
             exit;
         }
