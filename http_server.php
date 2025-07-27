@@ -266,15 +266,26 @@ class Worker
     private function tryGracefulExit()
     {
         try {
-            foreach ($this->connections as $connection) {
-                // 检查是否还有未发送/未接收的数据
-                if (!$connection->isIdle()) {
-                    return; // 有活跃连接，暂不退出
+            // 优雅退出时，可以先关闭所有空闲连接
+            $idleConnections = [];
+            foreach ($this->connections as $id => $connection) {
+                if ($connection->isIdle()) {
+                    $idleConnections[] = $id;
                 }
             }
-            // 所有连接都空闲，安全退出
-            $this->logger->log("所有连接处理完毕，进程安全退出");
-            exit(0);
+            
+            // 先关闭所有空闲连接
+            foreach ($idleConnections as $id) {
+                $this->cleanupConnection($id);
+            }
+            
+            // 检查剩余连接
+            if (empty($this->connections)) {
+                $this->logger->log("所有连接处理完毕，进程安全退出");
+                exit(0);
+            }
+            
+            return; // 还有未处理完的连接
         } catch (\Throwable $e) {
             $this->logger->log("优雅退出异常: " . $e->getMessage());
             exit(1); // 异常退出
@@ -588,6 +599,12 @@ class Worker
         // fwrite($connection->socket, $msg, 8192);
         $connection->send($msg);
         
+        // 如果连接已经不可用，清理它
+        if (!$connection->isValid()) {
+            $this->cleanupConnection($connection->id);
+            return false;
+        }
+
         // 注册写事件（仅当有数据时）
         if (!empty($connection->writeBuffer) && $connection->writeEvent === null) 
         {
