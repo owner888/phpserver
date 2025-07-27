@@ -504,9 +504,7 @@ class Worker
         // 这里我们只简单检查socket状态
         
         // 检查是否存在错误
-        $errno = 0;
-        $errstr = '';
-        $status = @socket_get_status($connection->socket);
+        $status = @stream_get_meta_data($connection->socket);
         
         // 如果有错误或已关闭，连接无效
         if (isset($status['eof']) && $status['eof']) {
@@ -518,11 +516,21 @@ class Worker
             return true;
         }
         
+        // 保存当前阻塞状态
+        $isBlocking = !$status['blocked'];
+    
+        // 临时设置为非阻塞
+        if ($isBlocking) {
+            stream_set_blocking($connection->socket, 0);
+        }
+        
         // 尝试从socket读取数据(非阻塞)
-        $oldBlock = stream_get_blocking($connection->socket);
-        stream_set_blocking($connection->socket, 0);
         $data = @fread($connection->socket, 1);
-        stream_set_blocking($connection->socket, $oldBlock);
+        
+        // 恢复原来的阻塞状态
+        if ($isBlocking) {
+            stream_set_blocking($connection->socket, 1);
+        }
         
         // 如果读取失败或读到EOF，连接可能已断开
         if ($data === false || ($data === '' && feof($connection->socket))) {
