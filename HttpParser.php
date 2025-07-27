@@ -1,6 +1,43 @@
 <?php
 class HttpParser
 {
+    /**
+     * HTTP 响应编码，支持自定义状态码和响应头
+     * @param string $content 响应内容
+     * @param int $status 状态码
+     * @param array $headers 额外响应头
+     * @return string
+     */
+    public static function encode($content, $status = 200, $headers = [])
+    {
+        $statusText = [
+            200 => 'OK',
+            400 => 'Bad Request',
+            404 => 'Not Found',
+            405 => 'Method Not Allowed',
+            413 => 'Payload Too Large',
+            500 => 'Internal Server Error'
+        ];
+        $header = "HTTP/1.1 {$status} " . ($statusText[$status] ?? 'OK') . "\r\n";
+        $defaultHeaders = [
+            "Content-Type" => "text/html;charset=utf-8",
+            "Connection" => "keep-alive",
+            "Server" => "workerman/3.5.4",
+            "Content-Length" => strlen($content)
+        ];
+        $headers = array_merge($defaultHeaders, $headers);
+        foreach ($headers as $k => $v) {
+            $header .= "{$k}: {$v}\r\n";
+        }
+        $header .= "\r\n";
+        return $header . $content;
+    }
+
+    /**
+     * HTTP请求解析
+     * @param string $content 请求内容
+     * @return array 解析后的数据
+     */
     public function parse($content)
     {
         $_POST = $_GET = $_COOKIE = $_REQUEST = $_SESSION = $_FILES = [];
@@ -30,7 +67,7 @@ class HttpParser
 
         // 请求行解析
         if (isset($header_data[0])) 
-	{
+	    {
             $requestLine = explode(' ', $header_data[0], 3);
             $_SERVER['REQUEST_METHOD']  = $requestLine[0] ?? '';
             $_SERVER['REQUEST_URI']     = $requestLine[1] ?? '';

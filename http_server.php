@@ -424,29 +424,18 @@ class Worker
     }
 
     /**
-     * http服务器返回数据
-     * @param $sendBuffer
+     * 发送数据给客户端
+     * @param Connection $connection
+     * @param string $sendBuffer
+     * @param int $status
+     * @param array $headers
      * @return bool
      */
-    public function sendData($connection, $sendBuffer) {
-        $msg = $this->httpEncode($sendBuffer); // http编码
+    public function sendData($connection, $sendBuffer, $status = 200, $headers = [])
+    {
+        $msg = HttpParser::encode($sendBuffer, $status, $headers);
         fwrite($connection->socket, $msg, 8192);
         return true;
-    }
-
-    /**
-     * http编码（仅GET请求）
-     * @param $content
-     * @return string
-     */
-    public function httpEncode($content)
-    {
-        $header = "HTTP/1.1 200 OK\r\n";
-        $header .= "Content-Type: text/html;charset=utf-8\r\n";
-        $header .= "Connection: keep-alive\r\n";
-        $header .= "Server: workerman/3.5.4\r\n";
-        $header .= "Content-Length: " . strlen($content) . "\r\n\r\n";
-        return $header . $content;
     }
 
     /**
