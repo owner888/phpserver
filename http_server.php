@@ -4,6 +4,11 @@ require_once __DIR__ . '/Logger.php';
 require_once __DIR__ . '/AsyncLogger.php';
 require_once __DIR__ . '/HttpParser.php';
 require_once __DIR__ . '/Connection.php';
+require_once __DIR__ . '/MiddlewareManager.php';
+// require_once __DIR__ . '/Middleware/LoggerMiddleware.php';
+// require_once __DIR__ . '/Middleware/RouterMiddleware.php';
+// require_once __DIR__ . '/Middleware/ResponseMiddleware.php';
+require_once __DIR__ . '/Middleware/HealthCheckMiddleware.php';
 
 // ab 测试
 // ab -n100000 -c100 -k http://127.0.0.1:2345/
@@ -33,6 +38,9 @@ if (!class_exists('EventBase'))
 }
 
 $worker = new Worker(new Logger(), new HttpParser());
+// 添加中间件
+$worker
+    ->use(new HealthCheckMiddleware($worker));
 
 switch ($command) {
     case 'start':
@@ -62,6 +70,7 @@ class Worker
     private $requestNum = 0;        // 每个子进程总请求数
     private $logger;
     private $httpParser;
+    private $middlewareManager;
     private $connections = []; // 用于管理所有 Connection 实例
     private $eventBase;
 
@@ -69,6 +78,7 @@ class Worker
     {
         $this->logger = $logger;
         $this->httpParser = $httpParser;
+        $this->middlewareManager = new MiddlewareManager($this);
 
         if (!$this->onMessage) 
         {
@@ -76,24 +86,23 @@ class Worker
             $this->onMessage = function($worker, $connection, $parsed)
             {
                 $worker->logger->log("处理连接: {$connection->id}");
-                // 健康检查 URL 处理
-                if ($_SERVER['REQUEST_URI'] == '/health') 
-                {
-                    $health = [
-                        'status' => 'ok',
-                        'memory' => round(memory_get_usage()/1024/1024, 2) . 'MB',
-                        'connections' => $this->connectionCount,
-                        'requests' => $this->requestNum
-                    ];
-                    $this->sendData($connection, json_encode($health), 200, ['Content-Type' => 'application/json']);
-                    return;
-                }
                 // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
-                // var_dump($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['QUERY_STRING']);
                 // 发送数据给客户端
                 $worker->sendData($connection, "hello world \n");
+                return true; // 表示处理完成
             };
         }
+    }
+
+    /**
+     * 添加中间件
+     * @param MiddlewareInterface|callable $middleware
+     * @return $this
+     */
+    public function use($middleware)
+    {
+        $this->middlewareManager->add($middleware);
+        return $this;
     }
 
     /**
@@ -572,7 +581,10 @@ class Worker
             }
             $this->requestNum++;
             $parsed = $this->httpParser->parse($buffer);
-            call_user_func_array($this->onMessage, [$this, $connection, $parsed]); // 调用处理函数
+            // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
+            // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
+            // 使用中间件处理请求
+            $this->middlewareManager->dispatch($parsed, $connection);
 
             // TCP 服务器
             // $buffer = fread($newSocket, 1024);
@@ -675,6 +687,24 @@ class Worker
             $this->logger->log("主进程不存在或已停止");
             exit;
         }
+    }
+
+    /**
+     * 获取当前连接数
+     * @return int
+     */
+    public function getConnectionCount()
+    {
+        return $this->connectionCount;
+    }
+
+    /**
+     * 获取总请求数
+     * @return int
+     */
+    public function getRequestNum()
+    {
+        return $this->requestNum;
     }
 
     /**
