@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/Logger.php';
+require_once __DIR__ . '/AsyncLogger.php';
 require_once __DIR__ . '/HttpParser.php';
 require_once __DIR__ . '/Connection.php';
 
@@ -332,6 +333,9 @@ class Worker
             // 创建 EventBase 实例
             $this->eventBase = new EventBase();
             $base = $this->eventBase;
+
+            // 创建异步日志记录器
+            $this->logger = new AsyncLogger($base);
 
             // // 定时统计输出
             // $statEvent = new Event(
