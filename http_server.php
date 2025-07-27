@@ -450,7 +450,6 @@ class Worker
                     $this->logger->log("客户端关闭连接");
                     $connection->close();
                     unset($this->connections[$id]);
-                    @fclose($newSocket); // 关闭连接
                     $this->connectionCount--;
                     return;
                 }
