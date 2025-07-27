@@ -11,6 +11,10 @@ class Connection
     private $maxBufferSize = 10485760; // 10MB
     private $connectionTimeout = 60;   // 60秒
 
+    public $isWebSocket = false;
+    public $webSocketVersion = null;
+    private $fragments = ''; // 存储分片的消息
+
     public function __construct($socket)
     {
         $this->socket = $socket;
@@ -88,6 +92,10 @@ class Connection
         return true;
     }
 
+    /**
+     * 检查连接是否有效
+     * @return bool
+     */
     public function isValid()
     {
         return $this->socket && is_resource($this->socket);
@@ -99,9 +107,30 @@ class Connection
         $this->readBuffer = '';
         $this->lastActive = time();
     }
-
-    public function close()
+    
+    /**
+     * 发送WebSocket消息
+     * @param string $message 消息内容
+     * @param int $opcode 操作码
+     * @return bool 是否成功
+     */
+    public function sendWebSocket($message, $opcode = WebSocketParser::OPCODE_TEXT)
     {
+        if (!$this->isWebSocket) {
+            return false;
+        }
+        
+        $frame = WebSocketParser::encode($message, $opcode);
+        return $this->send($frame);
+    }
+    
+    public function close($code = 1000, $reason = '')
+    {
+        if ($this->isWebSocket) {
+            // 发送关闭帧
+            $this->send(WebSocketParser::close($code, $reason));
+        }
+
         if ($this->readEvent) 
         {
             $this->readEvent->del();
@@ -117,5 +146,54 @@ class Connection
             @fclose($this->socket);
             $this->socket = null;
         }
+
+        return true;
+    }
+        
+    /**
+     * 发送WebSocket Ping
+     * @param string $data 可选数据
+     * @return bool 是否成功
+     */
+    public function ping($data = '')
+    {
+        if (!$this->isWebSocket) {
+            return false;
+        }
+        
+        return $this->send(WebSocketParser::ping($data));
+    }
+    
+    /**
+     * 发送WebSocket Pong
+     * @param string $data 可选数据
+     * @return bool 是否成功
+     */
+    public function pong($data = '')
+    {
+        if (!$this->isWebSocket) {
+            return false;
+        }
+        
+        return $this->send(WebSocketParser::pong($data));
+    }    
+    /**
+     * 追加消息片段
+     * @param string $fragment 消息片段
+     */
+    public function appendFragment($fragment)
+    {
+        $this->fragments .= $fragment;
+    }
+    
+    /**
+     * 获取并清空消息片段
+     * @return string 完整消息
+     */
+    public function getAndClearFragments()
+    {
+        $fragments = $this->fragments;
+        $this->fragments = '';
+        return $fragments;
     }
 }

@@ -1,5 +1,5 @@
 <?php
-
+// 如果将来需要扩展功能，可以考虑添加更完善的 HTTP 功能支持（如完整 HTTP 协议实现、路由系统、中间件架构等），或者实现更多协议支持（如 WebSocket）。
 require_once __DIR__ . '/Logger.php';
 require_once __DIR__ . '/AsyncLogger.php';
 require_once __DIR__ . '/HttpParser.php';
@@ -9,6 +9,7 @@ require_once __DIR__ . '/MiddlewareManager.php';
 // require_once __DIR__ . '/Middleware/RouterMiddleware.php';
 // require_once __DIR__ . '/Middleware/ResponseMiddleware.php';
 require_once __DIR__ . '/Middleware/HealthCheckMiddleware.php';
+require_once __DIR__ . '/Middleware/WebSocketMiddleware.php';
 
 // ab 测试
 // ab -n100000 -c100 -k http://127.0.0.1:2345/
@@ -38,9 +39,31 @@ if (!class_exists('EventBase'))
 }
 
 $worker = new Worker(new Logger(), new HttpParser());
-// 添加中间件
-$worker
-    ->use(new HealthCheckMiddleware($worker));
+// 应该是第一个中间件，优先处理WebSocket握手
+$worker->use(new WebSocketMiddleware($worker));
+
+// 设置WebSocket回调
+$worker->onWebSocketConnect(function($worker, $connection) {
+    $worker->logger->log("新WebSocket连接: " . $connection->id);
+    $connection->sendWebSocket("欢迎使用WebSocket服务!");
+});
+
+$worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
+    $worker->logger->log("收到WebSocket消息: " . $data);
+    
+    // 简单的聊天室：将消息广播给所有客户端
+    $worker->broadcast($data);
+    
+    return true;
+});
+
+$worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
+    $worker->logger->log("WebSocket连接关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
+    return true;
+});
+
+// 添加其他中间件
+$worker->use(new HealthCheckMiddleware($worker));
 
 switch ($command) {
     case 'start':
@@ -74,6 +97,10 @@ class Worker
     private $connections = []; // 用于管理所有 Connection 实例
     private $eventBase;
 
+    public $onWebSocketMessage = null; // WebSocket消息处理回调
+    public $onWebSocketConnect = null; // WebSocket连接建立回调
+    public $onWebSocketClose = null;   // WebSocket连接关闭回调
+
     public function __construct($logger, $httpParser)
     {
         $this->logger = $logger;
@@ -90,6 +117,29 @@ class Worker
                 // 发送数据给客户端
                 $worker->sendData($connection, "hello world \n");
                 return true; // 表示处理完成
+            };
+        }
+        
+        // 设置默认WebSocket回调
+        if (!$this->onWebSocketMessage) {
+            $this->onWebSocketMessage = function($worker, $connection, $data) {
+                $worker->logger->log("WebSocket消息: " . $data);
+                $connection->sendWebSocket("Echo: " . $data);
+                return true;
+            };
+        }
+        
+        if (!$this->onWebSocketConnect) {
+            $this->onWebSocketConnect = function($worker, $connection) {
+                $worker->logger->log("WebSocket连接已建立: " . $connection->id);
+                return true;
+            };
+        }
+        
+        if (!$this->onWebSocketClose) {
+            $this->onWebSocketClose = function($worker, $connection, $code, $reason) {
+                $worker->logger->log("WebSocket连接已关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
+                return true;
             };
         }
     }
@@ -555,6 +605,109 @@ class Worker
     }
 
     /**
+     * 处理WebSocket握手
+     * @param Connection $connection 客户端连接
+     * @param array $request HTTP请求数据
+     * @return bool 是否处理成功
+     */
+    public function handleWebSocketHandshake($connection, $request)
+    {
+        if (!WebSocketParser::isWebSocketHandshake($request)) {
+            return false;
+        }
+        
+        $response = WebSocketParser::generateHandshakeResponse($request);
+        if (!$response) {
+            return false;
+        }
+        
+        // 直接发送原始数据，不使用HTTP格式化
+        $connection->send($response);
+        
+        // 更新连接状态为WebSocket
+        $connection->isWebSocket = true;
+        if (isset($request['headers']['Sec-WebSocket-Version'])) {
+            $connection->webSocketVersion = $request['headers']['Sec-WebSocket-Version'];
+        }
+        
+        // 触发WebSocket连接回调
+        call_user_func($this->onWebSocketConnect, $this, $connection);
+        
+        return true;
+    }
+    
+    /**
+     * 处理WebSocket数据帧
+     * @param Connection $connection 客户端连接
+     * @param string $buffer 接收到的数据
+     */
+    public function handleWebSocketFrame($connection, $buffer)
+    {
+        $offset = 0;
+        $bufferLen = strlen($buffer);
+        
+        while ($offset < $bufferLen) {
+            $frame = WebSocketParser::decode(substr($buffer, $offset));
+            if (!$frame) {
+                break;
+            }
+            
+            $offset += $frame['length'];
+            
+            switch ($frame['opcode']) {
+                case WebSocketParser::OPCODE_TEXT:
+                case WebSocketParser::OPCODE_BINARY:
+                    // 如果不是片段的最后一部分，存储片段
+                    if (!$frame['FIN']) {
+                        $connection->appendFragment($frame['payload']);
+                    } else {
+                        $data = $frame['FIN'] ? $frame['payload'] : $connection->getAndClearFragments() . $frame['payload'];
+                        // 触发消息回调
+                        call_user_func($this->onWebSocketMessage, $this, $connection, $data, $frame['opcode']);
+                    }
+                    break;
+                    
+                case WebSocketParser::OPCODE_CONTINUATION:
+                    // 处理消息的后续片段
+                    $connection->appendFragment($frame['payload']);
+                    
+                    // 如果是最后一个片段，处理完整消息
+                    if ($frame['FIN']) {
+                        $data = $connection->getAndClearFragments();
+                        call_user_func($this->onWebSocketMessage, $this, $connection, $data, WebSocketParser::OPCODE_TEXT);
+                    }
+                    break;
+                    
+                case WebSocketParser::OPCODE_PING:
+                    // 自动回复pong
+                    $connection->pong($frame['payload']);
+                    break;
+                    
+                case WebSocketParser::OPCODE_PONG:
+                    // 可以更新活动时间
+                    $connection->updateActive();
+                    break;
+                    
+                case WebSocketParser::OPCODE_CLOSE:
+                    // 解析关闭代码和原因
+                    $code = 1000;
+                    $reason = '';
+                    if (strlen($frame['payload']) >= 2) {
+                        $code = unpack('n', substr($frame['payload'], 0, 2))[1];
+                        $reason = substr($frame['payload'], 2);
+                    }
+                    
+                    // 触发关闭回调
+                    call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
+                    
+                    // 回复关闭帧然后关闭连接
+                    $connection->close($code, $reason);
+                    break;
+            }
+        }
+    }
+
+    /**
      * 子进程处理数据
      * @param $newSocket
      * @param $events
@@ -572,15 +725,29 @@ class Worker
 
             if ($buffer === '' || $buffer === false) 
             {
-                if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
+                // 对于 WebSocket 连接，空数据是正常的，不应立即关闭
+                if ($connection->isWebSocket) {
+                    return; // WebSocket 连接读取到空数据时，不做处理继续保持连接
+                }
+
+                if (feof($newSocket) || !is_resource($newSocket)) 
                 {
-                    $this->logger->log("客户端关闭连接");
+                    $this->logger->log("客户端关闭连接: " . $id);
                     $this->cleanupConnection($id);
                     return;
                 }
             }
+            
+            // 已经是WebSocket连接，处理WebSocket帧
+            if ($connection->isWebSocket) {
+                $this->handleWebSocketFrame($connection, $buffer);
+                return;
+            }
+
+            // HTTP请求处理
             $this->requestNum++;
             $parsed = $this->httpParser->parse($buffer);
+
             // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
             // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
             // 使用中间件处理请求
@@ -611,6 +778,58 @@ class Worker
         } catch (\Throwable $e) {
             $this->logger->log("acceptData异常: " . $e->getMessage());
         }
+    }
+
+    /**
+     * 设置WebSocket消息处理回调
+     * @param callable $callback
+     * @return $this
+     */
+    public function onWebSocketMessage($callback)
+    {
+        $this->onWebSocketMessage = $callback;
+        return $this;
+    }
+    
+    /**
+     * 设置WebSocket连接回调
+     * @param callable $callback
+     * @return $this
+     */
+    public function onWebSocketConnect($callback)
+    {
+        $this->onWebSocketConnect = $callback;
+        return $this;
+    }
+    
+    /**
+     * 设置WebSocket关闭回调
+     * @param callable $callback
+     * @return $this
+     */
+    public function onWebSocketClose($callback)
+    {
+        $this->onWebSocketClose = $callback;
+        return $this;
+    }
+    
+    /**
+     * 向所有WebSocket客户端广播消息
+     * @param string $message 消息内容
+     * @param int $opcode 操作码
+     * @return int 发送成功的连接数
+     */
+    public function broadcast($message, $opcode = WebSocketParser::OPCODE_TEXT)
+    {
+        $count = 0;
+        foreach ($this->connections as $connection) {
+            if ($connection->isWebSocket) {
+                if ($connection->sendWebSocket($message, $opcode)) {
+                    $count++;
+                }
+            }
+        }
+        return $count;
     }
 
     /**
