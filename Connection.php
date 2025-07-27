@@ -25,11 +25,19 @@ class Connection
     {
         return empty($this->writeBuffer) && empty($this->readBuffer);
     }
-
+    /**
+     * 检查连接是否在最近60秒内有活动
+     * @return bool
+     */
     public function isActive()
     {
         return $this->lastActive > time() - 60; // 60秒内有活动
     }
+
+    /**
+     * 向写缓冲区添加数据
+     * @param string $data 要发送的数据
+     */
     public function send($data)
     {
         $this->writeBuffer .= $data;

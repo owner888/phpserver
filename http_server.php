@@ -59,7 +59,6 @@ class Worker
     private $maxConnections = 1024; // 最大连接数
     private $connectionCount = 0;   // 每个子进程到连接数
     private $requestNum = 0;        // 每个子进程总请求数
-    private $connectionLastActive = []; // 记录连接最后活跃时间
     private $logger;
     private $httpParser;
     private $connections = []; // 用于管理所有 Connection 实例
@@ -73,7 +72,7 @@ class Worker
         if (!$this->onMessage) 
         {
             // 默认处理
-            $this->onMessage = function($worker, $connection)
+            $this->onMessage = function($worker, $connection, $parsed)
             {
                 $worker->logger->log("处理连接: {$connection->id}");
                 // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
@@ -89,6 +88,16 @@ class Worker
      */
     public function start()
     {
+        if (file_exists($this->masterPidFile)) 
+        {
+            $pid = file_get_contents($this->masterPidFile);
+            if ($pid && posix_kill($pid, 0)) 
+            {
+                exit("当前程序已经在运行，请不要重复启动\n");
+            }
+            // 如果进程不存在但PID文件还在，清理PID文件
+            unlink($this->masterPidFile);
+        }
         // 判断当前程序是否已经启动
         $masterPidFileExist = is_file($this->masterPidFile);
         if ($masterPidFileExist) 
@@ -133,7 +142,7 @@ class Worker
         {
             pcntl_signal_dispatch(); // 信号分发
             $status = 0;
-            // 堵塞直至获取子进程退出或中断信号或调用一个信号处理器，或者没有子进程时返回错误
+            // 阻塞直至获取子进程退出或中断信号或调用一个信号处理器，或者没有子进程时返回错误
             $pid = pcntl_wait($status, WUNTRACED); 
             pcntl_signal_dispatch();
             if ($pid > 0) {
@@ -256,15 +265,20 @@ class Worker
     // 新增方法
     private function tryGracefulExit()
     {
-        foreach ($this->connections as $connection) {
-            // 检查是否还有未发送/未接收的数据
-            if (!$connection->isIdle()) {
-                return; // 有活跃连接，暂不退出
+        try {
+            foreach ($this->connections as $connection) {
+                // 检查是否还有未发送/未接收的数据
+                if (!$connection->isIdle()) {
+                    return; // 有活跃连接，暂不退出
+                }
             }
+            // 所有连接都空闲，安全退出
+            $this->logger->log("所有连接处理完毕，进程安全退出");
+            exit(0);
+        } catch (\Throwable $e) {
+            $this->logger->log("优雅退出异常: " . $e->getMessage());
+            exit(1); // 异常退出
         }
-        // 所有连接都空闲，安全退出
-        $this->logger->log("所有连接处理完毕，进程安全退出");
-        exit(0);
     }
 
     /**
@@ -309,25 +323,32 @@ class Worker
             $timeoutEvent = new Event(
                 $base,
                 -1,
-                Event::TIMEOUT | Event::PERSIST,
-                function() {
-                    $now = time();
-                    foreach ($this->connectionLastActive as $id => $last) {
-                        if ($now - $last > 60) {
-                            if (isset($this->connections[$id])) {
-                                $this->connections[$id]->close();
-                                unset($this->connections[$id]);
-                            }
-                            unset($this->connectionLastActive[$id]);
+                Event::TIMEOUT | Event::PERSIST, function() {
+                    foreach ($this->connections as $id => $connection) {
+                        if (!$connection->isActive() && !$this->testConnection($connection)) 
+                        {
                             $this->logger->log("连接超时关闭: $id");
+                            $connection->close();
+                            unset($this->connections[$id]);
                             $this->connectionCount--;
-                        } else {
-                            $this->logger->log("连接 {$id} 活跃，最后活跃时间: " . date('Y-m-d H:i:s', $last));
                         }
                     }
                 }
             );
             $timeoutEvent->add(10); // 每10秒检查一次
+
+            $statEvent = new Event(
+                $base,
+                -1,
+                Event::TIMEOUT | Event::PERSIST, function() {
+                    $this->logger->log(sprintf(
+                        "Memory usage: %s MB, Peak: %s MB",
+                        round(memory_get_usage() / 1024 / 1024, 2),
+                        round(memory_get_peak_usage() / 1024 / 1024, 2)
+                    ));
+                }
+            );
+            $statEvent->add(10); // 每分钟记录一次
 
             // 创建 Event 实例
             $event = new Event(
@@ -346,12 +367,82 @@ class Worker
                 pcntl_signal_dispatch();
                 $base->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
                 pcntl_signal_dispatch();
+                // 检查是否需要退出
+                if ($this->exiting && count($this->connections) === 0) 
+                {
+                    $this->logger->log("所有连接已关闭，进程退出");
+                    break;
+                }
             }
         } else {
             // 主进程将子进程pid保存到数组
             $this->logger->log("创建子进程pid: {$pid}");
             $this->forkArr[$pid] = $pid;
         }
+    }
+
+    /**
+     * 测试连接是否正常
+     * 通过尝试向连接写入和读取数据、检查socket状态来判断连接是否有效
+     * 
+     * @param Connection $connection 要测试的连接对象
+     * @return bool 连接正常返回true，连接异常返回false
+     */
+    private function testConnection(Connection $connection)
+    {
+        // 如果连接已经不是有效资源，直接返回false
+        if (!$connection->isValid()) {
+            return false;
+        }
+        
+        // 检查socket是否可读可写
+        $read = [$connection->socket];
+        $write = [$connection->socket];
+        $except = [];
+        
+        // 使用select检查连接状态，设置超时为0，立即返回结果
+        if (@stream_select($read, $write, $except, 0, 0) === false) {
+            // select失败，连接可能已断开
+            return false;
+        }
+        
+        // 如果近期有活动，可以认为连接是活跃的
+        if ($connection->isActive()) {
+            return true;
+        }
+        
+        // 对于HTTP连接，可以通过发送HTTP ping来测试
+        // 但这可能不适用于所有协议，取决于你的应用场景
+        // 这里我们只简单检查socket状态
+        
+        // 检查是否存在错误
+        $errno = 0;
+        $errstr = '';
+        $status = @socket_get_status($connection->socket);
+        
+        // 如果有错误或已关闭，连接无效
+        if (isset($status['eof']) && $status['eof']) {
+            return false;
+        }
+        
+        // 如果有未处理的数据，说明连接还是活跃的
+        if (!empty($connection->readBuffer) || !empty($connection->writeBuffer)) {
+            return true;
+        }
+        
+        // 尝试从socket读取数据(非阻塞)
+        $oldBlock = stream_get_blocking($connection->socket);
+        stream_set_blocking($connection->socket, 0);
+        $data = @fread($connection->socket, 1);
+        stream_set_blocking($connection->socket, $oldBlock);
+        
+        // 如果读取失败或读到EOF，连接可能已断开
+        if ($data === false || ($data === '' && feof($connection->socket))) {
+            return false;
+        }
+        
+        // 连接正常
+        return true;
     }
 
     /**
@@ -365,7 +456,7 @@ class Worker
         $this->logger->log("acceptConnect");
         try {
             $base = $args[0]; // 获取传递的 EventBase 实例
-            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置0，不堵塞，未获取到会警告
+            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置0，不阻塞，未获取到会警告
             // 有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理
             if (!$newSocket) return;
 
@@ -376,8 +467,6 @@ class Worker
                 return;
             }
 
-            // 记录连接最后活跃时间
-            $this->connectionLastActive[(int)$newSocket] = time();
             $this->connectionCount++;
 
             stream_set_blocking($newSocket, 0);
@@ -455,8 +544,8 @@ class Worker
                 }
             }
             $this->requestNum++;
-            $this->httpParser->parse($buffer);
-            call_user_func_array($this->onMessage, [$this, $connection]); // 调用处理函数
+            $parsed = $this->httpParser->parse($buffer);
+            call_user_func_array($this->onMessage, [$this, $connection, $parsed]); // 调用处理函数
 
             // TCP 服务器
             // $buffer = fread($newSocket, 1024);
