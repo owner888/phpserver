@@ -634,8 +634,8 @@ class Worker
         
         // 更新连接状态为WebSocket
         $connection->isWebSocket = true;
-        if (isset($request['headers']['Sec-WebSocket-Version'])) {
-            $connection->webSocketVersion = $request['headers']['Sec-WebSocket-Version'];
+        if (isset($request['server']['HTTP_SEC_WEBSOCKET_VERSION'])) {
+            $connection->webSocketVersion = $request['server']['HTTP_SEC_WEBSOCKET_VERSION'];
         }
         
         // 触发WebSocket连接回调
