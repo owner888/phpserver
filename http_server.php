@@ -52,17 +52,18 @@ class Worker
     
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
-    private $forkArr = []; // 子进程 pid 数组
-    private $socket = null; // 监听 socket
-    private $masterStop = 0; // 主进程是否停止
+    private $forkArr = [];          // 子进程数组
+    private $socket = null;         // 监听 socket
+    private $masterStop = 0;        // 主进程是否停止
+    private $exiting = false;       // 进程是否退出中
     private $maxConnections = 1024; // 最大连接数
-    private $connectionCount = 0; // 每个子进程到连接数
-    private $requestNum = 0; // 每个子进程总请求数
-    private $connectionEvents = []; // 保存连接事件
+    private $connectionCount = 0;   // 每个子进程到连接数
+    private $requestNum = 0;        // 每个子进程总请求数
     private $connectionLastActive = []; // 记录连接最后活跃时间
     private $logger;
     private $httpParser;
     private $connections = []; // 用于管理所有 Connection 实例
+    private $eventBase;
 
     public function __construct($logger, $httpParser)
     {
@@ -252,6 +253,20 @@ class Worker
         }
     }
 
+    // 新增方法
+    private function tryGracefulExit()
+    {
+        foreach ($this->connections as $connection) {
+            // 检查是否还有未发送/未接收的数据
+            if (!$connection->isIdle()) {
+                return; // 有活跃连接，暂不退出
+            }
+        }
+        // 所有连接都空闲，安全退出
+        $this->logger->log("所有连接处理完毕，进程安全退出");
+        exit(0);
+    }
+
     /**
      * 创建子进程
      */
@@ -262,22 +277,24 @@ class Worker
             die('子进程创建失败');
         } else if ($pid == 0) {
             // 以下代码在子进程中运行
-                  
+
             // 子进程注册优雅终止信号：SIGTERM
             pcntl_signal(SIGTERM, function() {
-                $this->logger->log("子进程收到 SIGTERM 准备优雅退出");
-                // 清理资源
-                foreach ($this->connectionEvents as $event) {
-                    $event->del();
-                }
-                if ($this->socket) {
+                $this->logger->log("子进程收到 SIGTERM，准备优雅退出");
+                $this->exiting = true;
+                if ($this->socket) 
+                {
                     fclose($this->socket);
+                    $this->socket = null;
                 }
+                // 检查连接
+                $this->tryGracefulExit();
                 exit(0);
             }, false);
             
             // 创建 EventBase 实例
-            $base = new EventBase();
+            $this->eventBase = new EventBase();
+            $base = $this->eventBase;
 
             // // 定时统计输出
             // $statEvent = new Event(
@@ -296,16 +313,16 @@ class Worker
                 function() {
                     $now = time();
                     foreach ($this->connectionLastActive as $id => $last) {
-                        if ($now - $last > 60) { // 超过60秒未活跃
-                            if (isset($this->connectionEvents[$id])) {
-                                $this->connectionEvents[$id]->del();
-                                unset($this->connectionEvents[$id]);
+                        if ($now - $last > 60) {
+                            if (isset($this->connections[$id])) {
+                                $this->connections[$id]->close();
+                                unset($this->connections[$id]);
                             }
-                            // 关闭socket
-                            // 这里假设你有保存socket对象，可以用 $id 找到
+                            unset($this->connectionLastActive[$id]);
                             $this->logger->log("连接超时关闭: $id");
                             $this->connectionCount--;
-                            unset($this->connectionLastActive[$id]);
+                        } else {
+                            $this->logger->log("连接 {$id} 活跃，最后活跃时间: " . date('Y-m-d H:i:s', $last));
                         }
                     }
                 }
@@ -345,13 +362,12 @@ class Worker
      */
     public function acceptConnect($socket, $events, $args)
     {
+        $this->logger->log("acceptConnect");
         try {
             $base = $args[0]; // 获取传递的 EventBase 实例
             $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置0，不堵塞，未获取到会警告
             // 有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理
-            if (!$newSocket) {
-                return;
-            }
+            if (!$newSocket) return;
 
             if ($this->connectionCount >= $this->maxConnections) 
             {
@@ -362,8 +378,6 @@ class Worker
 
             // 记录连接最后活跃时间
             $this->connectionLastActive[(int)$newSocket] = time();
-
-            $this->logger->log("acceptConnect");
             $this->connectionCount++;
 
             stream_set_blocking($newSocket, 0);
@@ -375,18 +389,38 @@ class Worker
                 stream_set_write_buffer($newSocket, 0);
             }
 
-            // 创建新事件监听新连接
-            $event = new Event(
-                $base, // EventBase 实例
-                $newSocket, // 监听的文件描述符
+            $connection = new Connection($newSocket);
+
+            // 注册读事件
+            $readEvent = new Event(
+                $base,
+                $newSocket,
                 Event::READ | Event::PERSIST, // 监听可读事件并保持持久化
-                [$this, "acceptData"], // 回调函数
-                [$base, $newSocket] // 传递 EventBase
+                [$this, "acceptData"],
+                [$base, $newSocket]
             );
             // 添加事件
-            $event->add();
-
-            $connection = new Connection($newSocket, $event);
+            $readEvent->add();
+            $connection->readEvent = $readEvent;
+            
+            // 写事件先不注册，只有 send 时才注册
+            $connection->writeEvent = null;
+            // // 注册写事件
+            // $writeEvent = new Event(
+            //     $base,
+            //     $newSocket,
+            //     Event::WRITE | Event::PERSIST,
+            //     function($fd, $events, $args) {
+            //         $connection = $args[0];
+            //         $connection->flush();
+            //         if (empty($connection->writeBuffer)) {
+            //             $connection->event->del();
+            //         }
+            //     },
+            //     [$connection]
+            // );
+            // $writeEvent->add();
+            // $connection->event = $writeEvent;
             $this->connections[$connection->id] = $connection;
         } catch (\Throwable $e) {
             $this->logger->log("acceptConnect异常: " . $e->getMessage());
@@ -405,32 +439,17 @@ class Worker
             $id = (int)$newSocket;
             if (!isset($this->connections[$id])) return;
             $connection = $this->connections[$id];
-            $connection->updateActive();// 更新连接最后活跃时间
-            // http 服务器（HTTP1.1 默认使用 keep-alive 保持连接）
-            // 限制最大请求体 2MB
-            // $buffer = @fread($newSocket, 2 * 1024 * 1024);
-            // if (strlen($buffer) > 2 * 1024 * 1024) {
-            //     $this->logger->log("请求体过大，已拒绝");
-            //     fwrite($newSocket, "HTTP/1.1 413 Payload Too Large\r\n\r\n");
-            //     @fclose($newSocket);
-            //     return;
-            // }
-
-            // HTTP 服务器
-            $buffer = @fread($newSocket, 65535); //获取数据
-            $this->logger->log("获取客户端数据:{$buffer}");
+            $connection->updateActive();
+        
+            $buffer = @fread($newSocket, 65535);
 
             if ($buffer === '' || $buffer === false) 
             {
                 if (feof($newSocket) || !is_resource($newSocket) || $buffer === false) 
                 {
                     $this->logger->log("客户端关闭连接");
-                    // 删除事件对象
-                    if (isset($this->connectionEvents[$id])) 
-                    {
-                        $this->connectionEvents[$id]->del();
-                        unset($this->connectionEvents[$id]);
-                    }
+                    $connection->close();
+                    unset($this->connections[$id]);
                     @fclose($newSocket); // 关闭连接
                     $this->connectionCount--;
                     return;
@@ -478,7 +497,29 @@ class Worker
     public function sendData($connection, $sendBuffer, $status = 200, $headers = [])
     {
         $msg = HttpParser::encode($sendBuffer, $status, $headers);
-        fwrite($connection->socket, $msg, 8192);
+        // fwrite($connection->socket, $msg, 8192);
+        $connection->send($msg);
+        
+        // 注册写事件（仅当有数据时）
+        if (!empty($connection->writeBuffer) && $connection->writeEvent === null) 
+        {
+            $writeEvent = new Event(
+                $this->eventBase,
+                $connection->socket,
+                Event::WRITE | Event::PERSIST,
+                function($fd, $events, $args) {
+                    $conn = $args[0];
+                    $conn->flush();
+                    if (empty($conn->writeBuffer)) {
+                        $conn->writeEvent->del();
+                        $conn->writeEvent = null;
+                    }
+                },
+                [$connection]
+            );
+            $writeEvent->add();
+            $connection->writeEvent = $writeEvent;
+        }
         return true;
     }
 
