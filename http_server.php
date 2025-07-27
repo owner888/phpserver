@@ -91,7 +91,7 @@ class Worker
     private $maxConnections = 1024; // 最大连接数
     private $connectionCount = 0;   // 每个子进程到连接数
     private $requestNum = 0;        // 每个子进程总请求数
-    private $logger;
+    public $logger;
     private $httpParser;
     private $middlewareManager;
     private $connections = []; // 用于管理所有 Connection 实例

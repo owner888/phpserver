@@ -15,19 +15,19 @@ class WebSocketParser
      */
     public static function generateHandshakeResponse(array $request)
     {
-        if (!isset($request['headers']['Sec-WebSocket-Key'])) {
+        if (!isset($request['server']['HTTP_SEC_WEBSOCKET_KEY'])) {
             return false;
         }
         
-        $secKey = $request['headers']['Sec-WebSocket-Key'];
+        $secKey = $request['server']['HTTP_SEC_WEBSOCKET_KEY'];
         $secAccept = base64_encode(sha1($secKey . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', true));
         
         $response = "HTTP/1.1 101 Switching Protocols\r\n";
         $response .= "Upgrade: websocket\r\n";
         $response .= "Connection: Upgrade\r\n";
         $response .= "Sec-WebSocket-Accept: $secAccept\r\n";
-        if (isset($request['headers']['Sec-WebSocket-Protocol'])) {
-            $response .= "Sec-WebSocket-Protocol: " . $request['headers']['Sec-WebSocket-Protocol'] . "\r\n";
+        if (isset($request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL'])) {
+            $response .= "Sec-WebSocket-Protocol: " . $request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL'] . "\r\n";
         }
         $response .= "\r\n";
         
