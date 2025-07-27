@@ -75,6 +75,18 @@ class Worker
             $this->onMessage = function($worker, $connection, $parsed)
             {
                 $worker->logger->log("处理连接: {$connection->id}");
+                // 健康检查 URL 处理
+                if ($_SERVER['REQUEST_URI'] == '/health') 
+                {
+                    $health = [
+                        'status' => 'ok',
+                        'memory' => round(memory_get_usage()/1024/1024, 2) . 'MB',
+                        'connections' => $this->connectionCount,
+                        'requests' => $this->requestNum
+                    ];
+                    $this->sendData($connection, json_encode($health), 200, ['Content-Type' => 'application/json']);
+                    return;
+                }
                 // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
                 // var_dump($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['QUERY_STRING']);
                 // 发送数据给客户端
