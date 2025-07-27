@@ -8,6 +8,8 @@ class Connection
     public $readBuffer = '';
     public $readEvent = null;
     public $writeEvent = null;
+    private $maxBufferSize = 10485760; // 10MB
+    private $connectionTimeout = 60;   // 60秒
 
     public function __construct($socket)
     {
@@ -31,7 +33,7 @@ class Connection
      */
     public function isActive()
     {
-        return $this->lastActive > time() - 60; // 60秒内有活动
+        return $this->lastActive > time() - $this->connectionTimeout; // 60秒内有活动
     }
 
     /**
@@ -40,7 +42,14 @@ class Connection
      */
     public function send($data)
     {
+        // 限制缓冲区大小
+        if (strlen($this->writeBuffer) > $this->maxBufferSize) 
+        {
+            // 缓冲区过大，可能连接有问题
+            return false;
+        }
         $this->writeBuffer .= $data;
+        return true;
     }  
 
     /**
