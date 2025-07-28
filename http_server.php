@@ -14,20 +14,6 @@ require_once __DIR__ . '/Middleware/WebSocketMiddleware.php';
 // ab 测试
 // ab -n100000 -c100 -k http://127.0.0.1:2345/
 
-// 解析命令
-$command = trim($argv[1] ?? '');
-$available_commands = [
-    'start',
-    'stop',
-    'reload',
-    'status',
-];
-$usage = "Usage: php index.php {" . implode('|', $available_commands) . "}\n";
-if (empty($command) || !in_array($command, $available_commands)) 
-{
-    exit($usage);
-}
-
 if (!extension_loaded('event')) 
 {
     exit("Event extension is not loaded.");
@@ -75,6 +61,9 @@ $worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
     return true;
 });
 
+// 解析并执行命令
+$worker->parseCommand($argv);
+
 // 添加其他中间件
 $worker->use(new HealthCheckMiddleware($worker));
 
@@ -114,6 +103,16 @@ class Worker
     private $httpParser;
     private $middlewareManager;
     private $eventBase;
+
+    /**
+     * 可用的命令列表
+     */
+    private $availableCommands = [
+        'start',
+        'stop',
+        'reload',
+        'status'
+    ];
 
     public function __construct($logger, $httpParser)
     {
@@ -156,6 +155,32 @@ class Worker
                 $worker->logger->log("WebSocket 连接已关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
                 return true;
             };
+        }
+    }
+
+    /**
+     * 解析并执行命令
+     * @param array $argv 命令行参数
+     * @return void
+     */
+    public function parseCommand($argv)
+    {
+        $command = trim($argv[1] ?? '');
+        $usage = "Usage: php http_server.php {" . implode('|', $this->availableCommands) . "}\n";
+        
+        if (empty($command) || !in_array($command, $this->availableCommands)) {
+            exit($usage);
+        }
+        
+        switch ($command) {
+            case 'start':
+                $this->start();
+                break;
+            case 'stop':
+            case 'reload':
+            case 'status':
+                $this->sendSignalToMaster($command);
+                break;
         }
     }
 
@@ -950,7 +975,7 @@ class Worker
                 $count++;
             }
         }
-        
+
         return $count;
     }
 
