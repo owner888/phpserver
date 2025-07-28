@@ -49,6 +49,7 @@ class HttpParser
             'body' => '',
             'get' => [],
             'post' => [],
+            'files' => [],
             'cookie' => [],
             'server' => []  // 添加此字段存储服务器信息
         ];
@@ -132,7 +133,7 @@ class HttpParser
                 $result['post'] = json_decode($http_body, true) ?: [];
             }
             // 支持 multipart/form-data
-            // 文件内容保存在 $_FILES[$field]['content']，你可自行保存到磁盘
+            // 文件内容保存在 $result['files'][$field]['content']，你可自行保存到磁盘
             // 仅支持单文件和简单字段，复杂嵌套表单需进一步扩展
             // 解析 multipart/form-data 时不会自动生成临时文件，需自行处理
             elseif (isset($result['headers']['Content-Type']) && 
@@ -159,7 +160,7 @@ class HttpParser
                                 // 文件内容
                                 $fileContent = preg_replace('/.*?\r\n\r\n/s', '', $block, 1);
                                 $fileContent = substr($fileContent, 0, -2); // 去掉结尾的 \r\n
-                                $this->setMultipartValue($_FILES, $fieldName, [
+                                $this->setMultipartValue($result['files'], $fieldName, [
                                     'name' => $fileName,
                                     'type' => $fileType,
                                     'size' => strlen($fileContent),
