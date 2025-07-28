@@ -49,7 +49,7 @@ class HttpParser
             'body' => '',
             'get' => [],
             'post' => [],
-            'cookies' => [],
+            'cookie' => [],
             'server' => []  // 添加此字段存储服务器信息
         ];
     
@@ -103,7 +103,7 @@ class HttpParser
                     foreach ($cookies as $cookie) {
                         if (strpos($cookie, '=') !== false) {
                             list($cookieKey, $cookieValue) = explode('=', trim($cookie), 2);
-                            $result['cookies'][$cookieKey] = $cookieValue;
+                            $result['cookie'][$cookieKey] = $cookieValue;
                         }
                     }
                 }
@@ -181,12 +181,12 @@ class HttpParser
             // 其他类型可扩展
         }
 
-        // // 对 $_GET/$_POST/$_COOKIE 进行简单过滤
-        // array_walk_recursive($result['get'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
-        // array_walk_recursive($result['post'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
-        // array_walk_recursive($result['cookie'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        // 对 $_GET/$_POST/$_COOKIE 进行简单过滤
+        array_walk_recursive($result['get'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        array_walk_recursive($result['post'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        array_walk_recursive($result['cookie'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
 
-        // $result['request'] = array_merge($result['get'], $result['post']);
+        $result['request'] = array_merge($result['get'], $result['post']);
 
         return $result;
     }
