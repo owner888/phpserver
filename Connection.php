@@ -200,27 +200,41 @@ class Connection
     
     public function close($code = 1000, $reason = '')
     {
-        if ($this->isWebSocket) {
-            // 发送关闭帧
-            $this->send(WebSocketParser::close($code, $reason));
-        }
+        try {
+            if ($this->isWebSocket && $this->isValid()) 
+            {
+                // 发送关闭帧
+                $this->send(WebSocketParser::close($code, $reason));
+            }
 
-        if ($this->readEvent) 
-        {
-            $this->readEvent->del();
-            $this->readEvent = null;
-        }
-        if ($this->writeEvent) 
-        {
-            $this->writeEvent->del();
-            $this->writeEvent = null;
-        }
-        if ($this->socket && is_resource($this->socket)) 
-        {
-            @fclose($this->socket);
-            $this->socket = null;
-        }
+            if ($this->readEvent) 
+            {
+                $this->readEvent->del();
+                $this->readEvent = null;
+            }
+            if ($this->writeEvent) 
+            {
+                $this->writeEvent->del();
+                $this->writeEvent = null;
+            }
+            if ($this->isValid()) 
+            {
+                @fclose($this->socket);
+                $this->socket = null;
+            }
+            
+            // 清空缓冲区和其他状态
+            $this->writeBuffer = '';
+            $this->readBuffer = '';
+            $this->fragments = '';
+            $this->isWebSocket = false;
+            $this->webSocketVersion = null;
+            $this->serverInfo = [];
 
-        return true;
+            return true;
+        } catch (\Throwable $e) {
+            // $this->logger->log("链接关闭异常: " . $e->getMessage());
+            return false;
+        }
     }
 }

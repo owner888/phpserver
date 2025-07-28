@@ -68,6 +68,12 @@ $worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
 
 $worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
     $worker->logger->log("WebSocket 连接关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
+
+    // 确保记录连接数变化
+    $worker->logger->log("当前 WebSocket 连接数: " . count(array_filter($worker->connections, function($conn) {
+        return $conn->isWebSocket;
+    })));
+
     return true;
 });
 
@@ -94,6 +100,9 @@ class Worker
     public $onWebSocketConnect = null; // WebSocket 连接建立回调
     public $onWebSocketClose = null;   // WebSocket 连接关闭回调
     public $logger;
+    public $connections = [];      // 用于管理所有 Connection 实例
+    public $connectionCount = 0;   // 每个子进程到连接数
+    public $requestNum = 0;        // 每个子进程总请求数
     
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
@@ -102,11 +111,8 @@ class Worker
     private $masterStop = 0;        // 主进程是否停止
     private $exiting = false;       // 进程是否退出中
     private $maxConnections = 1024; // 最大连接数
-    private $connectionCount = 0;   // 每个子进程到连接数
-    private $requestNum = 0;        // 每个子进程总请求数
     private $httpParser;
     private $middlewareManager;
-    private $connections = []; // 用于管理所有 Connection 实例
     private $eventBase;
 
     public function __construct($logger, $httpParser)
@@ -414,20 +420,40 @@ class Worker
             //     }
             // );
             // $statEvent->add(5); // 每5秒输出一次
-            $timeoutEvent = new Event(
+            $resourceCheckEvent = new Event(
                 $base,
                 -1,
-                Event::TIMEOUT | Event::PERSIST, function() {
+                Event::TIMEOUT | Event::PERSIST,
+                function() {
+                    $this->logger->log("执行资源检查...");
+                    $closed = 0;
+                    
+                    // 检查所有连接
                     foreach ($this->connections as $id => $connection) {
-                        if (!$connection->isActive() && !$this->testConnection($connection)) 
-                        {
-                            $this->logger->log("连接超时关闭: $id");
+                        // 检查连接有效性
+                        if (!$connection->isValid() || 
+                            (time() - $connection->lastActive > 300)) { // 5分钟不活跃
+
+                            $this->logger->log("资源检查：关闭不活跃连接 {$id}");
                             $this->cleanupConnection($id);
+                            $closed++;
                         }
+                    }
+                    
+                    if ($closed > 0) {
+                        $this->logger->log("资源检查：共关闭 {$closed} 个连接");
+                        gc_collect_cycles(); // 强制垃圾回收
+                    }
+                    
+                    // 检查内存使用情况
+                    $memory = memory_get_usage(true) / 1024 / 1024;
+                    if ($memory > 100) { // 内存超过100MB
+                        $this->logger->log("内存使用过高: {$memory}MB，执行垃圾回收");
+                        gc_collect_cycles();
                     }
                 }
             );
-            $timeoutEvent->add(10); // 每10秒检查一次
+            $resourceCheckEvent->add(10); // 每60秒检查一次
 
             $statEvent = new Event(
                 $base,
@@ -762,11 +788,18 @@ class Worker
                             $reason = substr($frame['payload'], 2);
                         }
                         
-                        // 触发关闭回调
-                        call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
+                        try {
+                            // 触发关闭回调
+                            call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
+                        } catch (\Throwable $e) {
+                            $this->logger->log("WebSocket 关闭回调异常: " . $e->getMessage());
+                        }
                         
                         // 回复关闭帧然后关闭连接
-                        $connection->close($code, $reason);
+                        $connection->close($code, $reason);    
+
+                        // 彻底清理连接资源
+                        $this->cleanupConnection($connection->id);
                         break;
                 }
             }
@@ -1019,9 +1052,28 @@ class Worker
     private function cleanupConnection($id)
     {
         if (isset($this->connections[$id])) {
-            $this->connections[$id]->close();
+            $connection = $this->connections[$id];
+        
+            // 调用连接关闭回调（如果是WebSocket连接）
+            if ($connection->isWebSocket && $this->onWebSocketClose) {
+                try {
+                    call_user_func($this->onWebSocketClose, $this, $connection, 1001, "Server closing connection");
+                } catch (\Throwable $e) {
+                    $this->logger->log("WebSocket 关闭回调异常: " . $e->getMessage());
+                }
+            }
+            
+            // 确保连接彻底关闭
+            $connection->close();
+            
+            // 移除引用
             unset($this->connections[$id]);
             $this->connectionCount--;
+            
+            // 触发垃圾回收
+            if ($this->connectionCount % 100 === 0) {
+                gc_collect_cycles();
+            }
         }
     }
 }
