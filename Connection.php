@@ -15,6 +15,8 @@ class Connection
     public $webSocketVersion = null;
     private $fragments = ''; // 存储分片的消息
 
+    public $serverInfo = [];
+
     public function __construct($socket)
     {
         $this->id = (int)$socket;

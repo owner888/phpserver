@@ -39,18 +39,17 @@ if (!class_exists('EventBase'))
 }
 
 $worker = new Worker(new Logger(), new HttpParser());
-// 应该是第一个中间件，优先处理WebSocket握手
+// 应该是第一个中间件，优先处理 WebSocket 握手
 $worker->use(new WebSocketMiddleware($worker));
 
-// 设置WebSocket回调
+// 设置 WebSocket 连接回调
 $worker->onWebSocketConnect(function($worker, $connection) {
-    $worker->logger->log("新WebSocket连接: " . $connection->id);
-    $connection->sendWebSocket("欢迎使用WebSocket服务!");
+    $worker->logger->log("新 WebSocket 连接: " . $connection->id);
+    $connection->sendWebSocket("欢迎使用 WebSocket 服务!");
 });
 
 $worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
-    print_r($_SERVER);
-    $worker->logger->log("收到WebSocket消息: " . $data);
+    $worker->logger->log("收到 WebSocket 消息: " . $data);
     
     // 简单的聊天室：将消息广播给所有客户端
     $worker->broadcast($data);
@@ -59,7 +58,7 @@ $worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
 });
 
 $worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
-    $worker->logger->log("WebSocket连接关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
+    $worker->logger->log("WebSocket 连接关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
     return true;
 });
 
@@ -82,6 +81,10 @@ class Worker
     public $count = 1;  // 子进程数，2 最高, 可以达到 2W5; 4 低一点，2W4; 8 更低，只有 1W 多
     public $localSocket = 'tcp://0.0.0.0:2345'; // 监听地址
     public $onMessage = null; // 处理函数
+    public $onWebSocketMessage = null; // WebSocket 消息处理回调
+    public $onWebSocketConnect = null; // WebSocket 连接建立回调
+    public $onWebSocketClose = null;   // WebSocket 连接关闭回调
+    public $logger;
     
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
@@ -92,15 +95,10 @@ class Worker
     private $maxConnections = 1024; // 最大连接数
     private $connectionCount = 0;   // 每个子进程到连接数
     private $requestNum = 0;        // 每个子进程总请求数
-    public $logger;
     private $httpParser;
     private $middlewareManager;
     private $connections = []; // 用于管理所有 Connection 实例
     private $eventBase;
-
-    public $onWebSocketMessage = null; // WebSocket消息处理回调
-    public $onWebSocketConnect = null; // WebSocket连接建立回调
-    public $onWebSocketClose = null;   // WebSocket连接关闭回调
 
     public function __construct($logger, $httpParser)
     {
@@ -120,11 +118,11 @@ class Worker
                 return true; // 表示处理完成
             };
         }
-        
-        // 设置默认WebSocket回调
+
+        // 设置默认 WebSocket 消息处理回调
         if (!$this->onWebSocketMessage) {
             $this->onWebSocketMessage = function($worker, $connection, $data) {
-                $worker->logger->log("WebSocket消息: " . $data);
+                $worker->logger->log("WebSocket 消息: " . $data);
                 $connection->sendWebSocket("Echo: " . $data);
                 return true;
             };
@@ -132,14 +130,14 @@ class Worker
         
         if (!$this->onWebSocketConnect) {
             $this->onWebSocketConnect = function($worker, $connection) {
-                $worker->logger->log("WebSocket连接已建立: " . $connection->id);
+                $worker->logger->log("WebSocket 连接已建立: " . $connection->id);
                 return true;
             };
         }
         
         if (!$this->onWebSocketClose) {
             $this->onWebSocketClose = function($worker, $connection, $code, $reason) {
-                $worker->logger->log("WebSocket连接已关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
+                $worker->logger->log("WebSocket 连接已关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
                 return true;
             };
         }
@@ -543,7 +541,7 @@ class Worker
     }
 
     /**
-     * 子进程接受请求
+     * 子进程接受连接
      * @param $socket
      * @param $events
      * @param $arg
@@ -614,7 +612,7 @@ class Worker
     }
 
     /**
-     * 处理WebSocket握手
+     * 处理 WebSocket 握手
      * @param Connection $connection 客户端连接
      * @param array $request HTTP请求数据
      * @return bool 是否处理成功
@@ -656,7 +654,7 @@ class Worker
         }
         
         if (!$success) {
-            $this->logger->log("WebSocket握手响应发送失败");
+            $this->logger->log("WebSocket 握手响应发送失败");
             return false;
         }
         
@@ -757,7 +755,8 @@ class Worker
     }
 
     /**
-     * 子进程处理数据
+     * 子进程处理数据，一个 HTTP 请求可能会有多次数据到来
+     * 例如：WebSocket 握手请求，或者 HTTP 请求的多次数据
      * @param $newSocket
      * @param $events
      * @param $arg
@@ -786,8 +785,8 @@ class Worker
                     return;
                 }
             }
-            
-            // 已经是WebSocket连接，处理WebSocket帧
+
+            // 已经是 WebSocket 连接，处理 WebSocket 帧
             if ($connection->isWebSocket) {
                 $this->handleWebSocketFrame($connection, $buffer);
                 return;
@@ -830,7 +829,7 @@ class Worker
     }
 
     /**
-     * 设置WebSocket消息处理回调
+     * 设置 WebSocket 消息处理回调
      * @param callable $callback
      * @return $this
      */
@@ -841,7 +840,7 @@ class Worker
     }
     
     /**
-     * 设置WebSocket连接回调
+     * 设置 WebSocket 连接回调
      * @param callable $callback
      * @return $this
      */
@@ -852,7 +851,7 @@ class Worker
     }
     
     /**
-     * 设置WebSocket关闭回调
+     * 设置 WebSocket 关闭回调
      * @param callable $callback
      * @return $this
      */
@@ -863,7 +862,7 @@ class Worker
     }
     
     /**
-     * 向所有WebSocket客户端广播消息
+     * 向所有 WebSocket 客户端广播消息
      * @param string $message 消息内容
      * @param int $opcode 操作码
      * @return int 发送成功的连接数
