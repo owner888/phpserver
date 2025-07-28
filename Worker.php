@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/ProcessManager.php';
 
 class Worker
 {
@@ -20,6 +21,17 @@ class Worker
     private $forkArr = [];          // 子进程数组
     private $socket = null;         // 监听 socket
     private $masterStop = 0;        // 主进程是否停止
+        
+    /**
+     * 进程管理器
+     * @var ProcessManager
+     */
+    private $processManager;
+
+    /**
+     * 退出标志
+     * @var bool
+     */
     private $exiting = false;       // 进程是否退出中
     private $maxConnections = 1024; // 最大连接数
     private $httpParser;
@@ -127,31 +139,13 @@ class Worker
      */
     public function start()
     {
-        if (file_exists($this->masterPidFile)) 
-        {
-            $pid = file_get_contents($this->masterPidFile);
-            if ($pid && posix_kill($pid, 0)) 
-            {
-                exit("当前程序已经在运行，请不要重复启动\n");
-            }
-            // 如果进程不存在但PID文件还在，清理PID文件
-            unlink($this->masterPidFile);
-        }
-        // 判断当前程序是否已经启动
-        $masterPidFileExist = is_file($this->masterPidFile);
-        if ($masterPidFileExist) 
-        {
-            exit("当前程序已经在运行，请不要重启启动\n");
-        }
-
-        // 保存主进程pid到文件用于stop,reload,status等命令操作
-        $masterPid = posix_getpid();
-        file_put_contents($this->masterPidFile, $masterPid);
-
-        // 注册主进程信号，pcntl_signal第三个参数设置成false，才会有信号时被pcntl_wait调用
-        pcntl_signal(SIGINT,  [$this, 'masterSignalHandler'], false); // 退出，用于stop命令或主进程窗口按下ctrl+c
-        pcntl_signal(SIGUSR1, [$this, 'masterSignalHandler'], false); // 自定义信号1，用于reload命令
-        pcntl_signal(SIGUSR2, [$this, 'masterSignalHandler'], false); // 自定义信号2，用户status命令
+        // 创建 ProcessManager 实例
+        $this->processManager = new ProcessManager(
+            $this->logger, 
+            $this->count, 
+            $this->masterPidFile, 
+            $this->masterStatusFile
+        );
 
         // 主进程创建tcp服务器
         $errno = 0;
@@ -170,135 +164,225 @@ class Worker
         stream_set_blocking($socket, 0);
         $this->socket = $socket;
 
-        // 创建count个子进程，用于接受请求和处理数据
-        while(count($this->forkArr) < $this->count) 
-        {
-            $this->fork();
-        }
-
-        // 主进程接受信号和监听子进程信号
-        while(true)
-        {
-            pcntl_signal_dispatch(); // 信号分发
-            $status = 0;
-            // 阻塞直至获取子进程退出或中断信号或调用一个信号处理器，或者没有子进程时返回错误
-            $pid = pcntl_wait($status, WUNTRACED); 
-            pcntl_signal_dispatch();
-            if ($pid > 0) {
-                // 子进程退出
-                $this->logger->log("子进程退出pid: {$pid}, 状态: {$status}");
-                unset($this->forkArr[$pid]);
-                // 关闭还是重启
-                if (!$this->masterStop) 
-                {
-                    // 如果主进程没有停止，重启子进程
-                    $this->logger->log("主进程未停止，重启子进程");
-                    $this->logger->log("子进程退出状态: {$status}");
-                    // 检查子进程退出状态
-                    // pcntl_wifexited 检查子进程是否正常退出
-                    // pcntl_wexitstatus 获取子进程的退出状态码
-                    // 如果子进程异常退出，重启一个新子进程
-                    // 如果子进程是因为信号退出的，pcntl_wifsignaled
-                    // pcntl_wtermsig 获取子进程终止的信号编号
-                    // pcntl_wstopsig 获取子进程停止的信号编号
-                    // pcntl_wifstopped 检查子进程是否停止
-                    // pcntl_wifcontinued 检查子进程是否继续运行
-                    // pcntl_wifexited 检查子进程是否正常退出
-                    // pcntl_wexitstatus 获取子进程的退出状态码
-                    // pcntl_wifsignaled 检查子进程是否因为信号退出
-                    // pcntl_wtermsig 获取子进程终止的信号编号
-                    // pcntl_wstopsig 获取子进程停止的信号编号  
-                    // 如果子进程退出状态为 0，表示正常退出
-                    if (pcntl_wifexited($status) && pcntl_wexitstatus($status) == 0) 
-                    {
-                        $this->logger->log("子进程正常退出，重启一个新子进程");
-                    } 
-                    else 
-                    {
-                        $this->logger->log("子进程异常退出，重启一个新子进程");
-                    }
-                    // 重启
-                    $this->fork();
-                } else {
-                    $this->logger->log("主进程已停止，子进程退出");
-                }
-            } else {
-                // 主进程退出状态并且没有子进程时退出
-                if ($this->masterStop && empty($this->forkArr)) {
-                    unlink($this->masterPidFile);
-                    fclose($this->socket);
-                    $this->logger->log("主进程退出");
-                    exit(0);
-                }
-            }
-        }
+        // 设置 Worker 实例和 socket
+        $this->processManager->setWorker($this)
+                             ->setSocket($socket);
+        
+        // 启动进程管理器
+        $this->processManager->start();
     }
 
     /**
-     * 主进程信号处理函数
-     * @param int $sigNo
+     * 启动工作进程
+     * 
+     * @param resource $socket 监听socket
+     * @return void
      */
-    // 处理 SIGINT, SIGUSR1, SIGUSR2 信号
-    // SIGINT: 退出，SIGUSR1: 重启，SIGUSR2: 保存状态信息
-    // 其他信号: 可以添加其他处理逻辑
-    // 例如 SIGTERM: 优雅退出，清理资源等
-    // 例如 SIGUSR2: 保存状态信息到文件
-    // 例如 SIGCHLD: 子进程退出时处理
-    // 例如 SIGPIPE: 忽略管道破裂信号
-    // 例如 SIGALRM: 定时器信号
-    // 例如 SIGHUP:  重新加载配置文件
-    // 例如 SIGQUIT: 退出并生成核心转储文件
-    // 例如 SIGTSTP: 暂停进程
-    // 例如 SIGCONT: 恢复暂停的进程
-    // 例如 SIGTTIN: 后台进程尝试读取终端时处理
-    // 例如 SIGTTOU: 后台进程尝试写入终端
-    // 例如 SIGXCPU: 进程超过 CPU 时间限制时处理
-    // 例如 SIGXFSZ: 进程超过文件大小限制时处理
-    // 例如 SIGPROF: 进程超过配置的 CPU 时间限制时处理
-    // 例如 SIGVTALRM: 进程超过虚拟时间限制时处理
-    // 例如 SIGWINCH: 窗口大小改变时处理
-    // 例如 SIGPOLL: 轮询事件发生时处理
-    public function masterSignalHandler($sigNo)
+    public function runWorker($socket)
     {
-        switch ($sigNo) {
-            case SIGINT:
-                // 退出，先发送子进程信号关闭子进程，再等待主进程退出
-                foreach ($this->forkArr as $pid) 
-                {
-                    $this->logger->log("优雅关闭子进程 pid: {$pid}");
-                    posix_kill($pid, SIGKILL);
-                }
-                $this->masterStop = 1; // 将主进程状态置成退出
-                break;
-            case SIGUSR1:
-                // 重启，优雅关闭所有子进程
-                foreach ($this->forkArr as $pid) 
-                {
-                    $this->logger->log("关闭子进程 pid: {$pid}");
-                    posix_kill($pid, SIGTERM); // 用 SIGTERM 而不是 SIGKILL
-                    // 这里可以使用 SIGKILL 强制关闭子进程，但不推荐，因为
-                    // SIGTERM 可以让子进程优雅退出，清理资源等
-                    // posix_kill($pid, SIGKILL); // 强制关闭子进程
-                }
-                break;
-            case SIGUSR2:
-                $this->logger->log("将状态信息保存至文件: {$this->masterStatusFile}");
-                // 将状态信息保存至文件
-                $str = "---------------------STATUS---------------------\n";
-                $str .= 'PHP version:' . PHP_VERSION . "\n";
-                $str .= 'processes num:' . $this->count . "\n";
-                $str .= "---------------------PROCESS STATUS---------------------\n";
-                $str .= "pid\n";
+        $this->socket = $socket;
+        
+        // 创建 EventBase 实例
+        $this->eventBase = new EventBase();
+        $base = $this->eventBase;
 
-                foreach ($this->forkArr as $childPid) 
-                {
-                    $str .= $childPid."\n";
-                }
-                file_put_contents($this->masterStatusFile, $str);
-                break;
-            default:
-                // 处理所有其他信号
+        // 创建异步日志记录器
+        $this->logger = new AsyncLogger($base);
+
+        // 添加资源检查事件
+        $this->addResourceCheckEvent($base);
+        
+        // 添加ping事件
+        $this->addPingEvent($base);
+        
+        // 添加统计事件
+        $this->addStatEvent($base);
+
+        // 创建并添加连接接受事件
+        $event = new Event(
+            $base,
+            $this->socket,
+            Event::READ | Event::PERSIST,
+            [$this, "acceptConnect"],
+            [$base]
+        );
+        $event->add();
+        
+        // 启动事件循环
+        $this->startEventLoop($base);
+    }
+        
+    /**
+     * 停止工作进程
+     * 
+     * @return void
+     */
+    public function stopWorker()
+    {
+        $this->logger->log("工作进程停止中...");
+        $this->exiting = true;
+        
+        // 关闭监听socket
+        if ($this->socket && is_resource($this->socket)) {
+            @fclose($this->socket);
+            $this->socket = null;
         }
+        
+        // 主动关闭空闲连接
+        $this->closeIdleConnections();
+        
+        // 如果没有活跃连接，立即退出
+        if (empty($this->connections)) {
+            $this->logger->log("没有活跃连接，工作进程立即退出");
+            return;
+        }
+        
+        // 添加退出检查事件
+        $this->addExitCheckEvent($this->eventBase);
+    }
+
+    /**
+     * 添加资源检查事件
+     * 
+     * @param EventBase $base 事件基础实例
+     * @return void
+     */
+    private function addResourceCheckEvent($base)
+    {
+        $resourceCheckEvent = new Event(
+            $base,
+            -1,
+            Event::TIMEOUT | Event::PERSIST,
+            function() {
+                // 现有的资源检查代码...
+            }
+        );
+        $resourceCheckEvent->add(10);
+    }
+    
+    /**
+     * 添加ping事件
+     * 
+     * @param EventBase $base 事件基础实例
+     * @return void
+     */
+    private function addPingEvent($base)
+    {
+        $pingEvent = new Event(
+            $base,
+            -1,
+            Event::TIMEOUT | Event::PERSIST,
+            function() {
+                // 现有的ping代码...
+            }
+        );
+        $pingEvent->add(5);
+    }
+    
+    /**
+     * 添加统计事件
+     * 
+     * @param EventBase $base 事件基础实例
+     * @return void
+     */
+    private function addStatEvent($base)
+    {
+        $statEvent = new Event(
+            $base,
+            -1,
+            Event::TIMEOUT | Event::PERSIST,
+            function() {
+                // 现有的统计代码...
+            }
+        );
+        $statEvent->add(10);
+    }
+    
+    /**
+     * 添加退出检查事件
+     * 
+     * @param EventBase $base 事件基础实例
+     * @return void
+     */
+    private function addExitCheckEvent($base)
+    {
+        $exitCheckEvent = new Event(
+            $base,
+            -1,
+            Event::TIMEOUT | Event::PERSIST,
+            function() {
+                $this->tryGracefulExit();
+            }
+        );
+        $exitCheckEvent->add(0.5);
+    }
+    
+    /**
+     * 启动事件循环
+     * 
+     * @param EventBase $base 事件基础实例
+     * @return void
+     */
+    private function startEventLoop($base)
+    {
+        while (!$this->exiting || !empty($this->connections)) {
+            pcntl_signal_dispatch();
+            $base->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
+            pcntl_signal_dispatch();
+            
+            // 如果需要退出且没有连接，则退出循环
+            if ($this->exiting && empty($this->connections)) {
+                $this->logger->log("所有连接已关闭，事件循环退出");
+                break;
+            }
+            
+            // 短暂休眠，避免CPU占用过高
+            usleep(10000); // 10ms
+        }
+    }
+    
+    /**
+     * 关闭所有空闲连接
+     * 
+     * @return int 关闭的连接数
+     */
+    private function closeIdleConnections()
+    {
+        $count = 0;
+        $idleConnections = [];
+        
+        foreach ($this->connections as $id => $connection) {
+            if ($connection->isIdle()) {
+                $idleConnections[] = $id;
+            }
+        }
+        
+        foreach ($idleConnections as $id) {
+            $this->logger->log("关闭空闲连接: $id");
+            $this->cleanupConnection($id);
+            $count++;
+        }
+        
+        return $count;
+    }
+    
+    /**
+     * 发送命令给主进程
+     * 
+     * @param string $command 命令
+     * @return void
+     */
+    public function sendSignalToMaster($command)
+    {
+        $processManager = new ProcessManager(
+            $this->logger, 
+            $this->count, 
+            $this->masterPidFile, 
+            $this->masterStatusFile
+        );
+        
+        $processManager->sendCommand($command);
+        exit;
     }
 
     // 新增方法
@@ -947,39 +1031,6 @@ class Worker
             $connection->writeEvent = $writeEvent;
         }
         return true;
-    }
-
-    /**
-     * 发送命令给主进程
-     * @param $command
-     */
-    public function sendSignalToMaster($command)
-    {
-        $masterPid = file_get_contents($this->masterPidFile);
-        if ($masterPid) 
-        {
-            switch ($command) {
-                case 'stop':
-                    posix_kill($masterPid, SIGINT);
-                    break;
-                case 'reload':
-                    posix_kill($masterPid, SIGUSR1);
-                    break;
-                case 'status':
-                    posix_kill($masterPid, SIGUSR2);
-                    sleep(1); // 等待主进程将状态信息放入文件
-                    $masterStatus = file_get_contents($this->masterStatusFile);
-                    $this->logger->log($masterStatus);
-                    unlink($this->masterStatusFile);
-                    break;
-            }
-            exit;
-        } 
-        else 
-        {
-            $this->logger->log("主进程不存在或已停止");
-            exit;
-        }
     }
 
     /**
