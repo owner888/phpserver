@@ -794,9 +794,6 @@ class Worker
                         } catch (\Throwable $e) {
                             $this->logger->log("WebSocket 关闭回调异常: " . $e->getMessage());
                         }
-                        
-                        // 回复关闭帧然后关闭连接
-                        $connection->close($code, $reason);    
 
                         // 彻底清理连接资源
                         $this->cleanupConnection($connection->id);
