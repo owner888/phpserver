@@ -274,7 +274,12 @@ class Worker
                 foreach ($this->connections as $id => $connection) 
                 {
                     // 检查连接有效性
-                    if (!$connection->isValid() || !$connection->isActive()) 
+                    if (!$connection->isValid() || !$connection->isActive() || !$connection->testConnection()) 
+                    {
+                        $this->logger->log("资源检查：关闭无效连接 {$id}");
+                        $this->cleanupConnection($id);
+                        $closed++;
+                    }
                     {
                         $this->logger->log("资源检查：关闭不活跃连接 {$id}");
                         $this->cleanupConnection($id);

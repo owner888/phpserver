@@ -57,6 +57,67 @@ class Connection
     }
 
     /**
+     * 测试连接是否正常
+     * 通过尝试向连接写入和读取数据、检查socket状态来判断连接是否有效
+     * 
+     * @return bool 连接正常返回true，连接异常返回false
+     */
+    private function testConnection()
+    {
+        // 检查socket是否可读可写
+        $read = [$this->socket];
+        $write = [$this->socket];
+        $except = [];
+        
+        // 使用select检查连接状态，设置超时为0，立即返回结果
+        if (@stream_select($read, $write, $except, 0, 0) === false) {
+            // select失败，连接可能已断开
+            return false;
+        }
+        
+        // 对于HTTP连接，可以通过发送HTTP ping来测试
+        // 但这可能不适用于所有协议，取决于你的应用场景
+        // 这里我们只简单检查socket状态
+        
+        // 检查是否存在错误
+        $status = @stream_get_meta_data($this->socket);
+        
+        // 如果有错误或已关闭，连接无效
+        if (isset($status['eof']) && $status['eof']) {
+            return false;
+        }
+        
+        // 如果有未处理的数据，说明连接还是活跃的
+        if (!empty($connection->readBuffer) || !empty($connection->writeBuffer)) {
+            return true;
+        }
+        
+        // 保存当前阻塞状态
+        $isBlocking = !$status['blocked'];
+    
+        // 临时设置为非阻塞
+        if ($isBlocking) {
+            stream_set_blocking($this->socket, 0);
+        }
+        
+        // 尝试从socket读取数据(非阻塞)
+        $data = @fread($this->socket, 1);
+        
+        // 恢复原来的阻塞状态
+        if ($isBlocking) {
+            stream_set_blocking($this->socket, 1);
+        }
+        
+        // 如果读取失败或读到EOF，连接可能已断开
+        if ($data === false || ($data === '' && feof($this->socket))) {
+            return false;
+        }
+        
+        // 连接正常
+        return true;
+    }
+
+    /**
      * 向写缓冲区添加数据
      * @param string $data 要发送的数据
      */
