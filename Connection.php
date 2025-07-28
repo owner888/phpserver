@@ -1,9 +1,9 @@
 <?php
 class Connection
 {
+    public $id;
     public $socket;
     public $lastActive;
-    public $id;
     public $writeBuffer = '';
     public $readBuffer = '';
     public $readEvent = null;
@@ -17,8 +17,8 @@ class Connection
 
     public function __construct($socket)
     {
-        $this->socket = $socket;
         $this->id = (int)$socket;
+        $this->socket = $socket;
         $this->lastActive = time();
     }
 
@@ -27,10 +27,24 @@ class Connection
         $this->lastActive = time();
     }
 
+    /**
+     * 检查连接是否有效
+     * @return bool
+     */
+    public function isValid()
+    {
+        return $this->socket && is_resource($this->socket);
+    }
+
+    /**
+     * 检查连接是否空闲
+     * @return bool
+     */
     public function isIdle() 
     {
         return empty($this->writeBuffer) && empty($this->readBuffer);
     }
+
     /**
      * 检查连接是否在最近60秒内有活动
      * @return bool
@@ -111,25 +125,9 @@ class Connection
         }
         return true;
     }
-
-    /**
-     * 检查连接是否有效
-     * @return bool
-     */
-    public function isValid()
-    {
-        return $this->socket && is_resource($this->socket);
-    }
-
-    public function reset()
-    {
-        $this->writeBuffer = '';
-        $this->readBuffer = '';
-        $this->lastActive = time();
-    }
     
     /**
-     * 发送WebSocket消息
+     * 发送 WebSocket 消息
      * @param string $message 消息内容
      * @param int $opcode 操作码
      * @return bool 是否成功
@@ -143,35 +141,9 @@ class Connection
         $frame = WebSocketParser::encode($message, $opcode);
         return $this->send($frame);
     }
-    
-    public function close($code = 1000, $reason = '')
-    {
-        if ($this->isWebSocket) {
-            // 发送关闭帧
-            $this->send(WebSocketParser::close($code, $reason));
-        }
-
-        if ($this->readEvent) 
-        {
-            $this->readEvent->del();
-            $this->readEvent = null;
-        }
-        if ($this->writeEvent) 
-        {
-            $this->writeEvent->del();
-            $this->writeEvent = null;
-        }
-        if ($this->socket && is_resource($this->socket)) 
-        {
-            @fclose($this->socket);
-            $this->socket = null;
-        }
-
-        return true;
-    }
         
     /**
-     * 发送WebSocket Ping
+     * 发送 WebSocket Ping
      * @param string $data 可选数据
      * @return bool 是否成功
      */
@@ -185,7 +157,7 @@ class Connection
     }
     
     /**
-     * 发送WebSocket Pong
+     * 发送 WebSocket Pong
      * @param string $data 可选数据
      * @return bool 是否成功
      */
@@ -215,5 +187,38 @@ class Connection
         $fragments = $this->fragments;
         $this->fragments = '';
         return $fragments;
+    }
+
+    public function reset()
+    {
+        $this->writeBuffer = '';
+        $this->readBuffer = '';
+        $this->lastActive = time();
+    }
+    
+    public function close($code = 1000, $reason = '')
+    {
+        if ($this->isWebSocket) {
+            // 发送关闭帧
+            $this->send(WebSocketParser::close($code, $reason));
+        }
+
+        if ($this->readEvent) 
+        {
+            $this->readEvent->del();
+            $this->readEvent = null;
+        }
+        if ($this->writeEvent) 
+        {
+            $this->writeEvent->del();
+            $this->writeEvent = null;
+        }
+        if ($this->socket && is_resource($this->socket)) 
+        {
+            @fclose($this->socket);
+            $this->socket = null;
+        }
+
+        return true;
     }
 }
