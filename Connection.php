@@ -46,13 +46,33 @@ class Connection
      */
     public function send($data)
     {
-        // 限制缓冲区大小
-        if (strlen($this->writeBuffer) > $this->maxBufferSize) 
-        {
-            // 缓冲区过大，可能连接有问题
+        if (!$this->isValid()) {
             return false;
         }
-        $this->writeBuffer .= $data;
+        
+        // 直接尝试发送数据
+        $bytesWritten = @fwrite($this->socket, $data);
+        
+        // 写入完全成功
+        if ($bytesWritten === strlen($data)) {
+            $this->updateActive();
+            return true;
+        }
+        
+        // 写入失败
+        if ($bytesWritten === false) {
+            return false;
+        }
+        
+        // 限制缓冲区大小
+        if ((strlen($this->writeBuffer) + strlen($data) - $bytesWritten) > $this->maxBufferSize) {
+            return false; // 缓冲区过大，拒绝添加
+        }
+        
+        // 部分写入，将剩余数据加入缓冲区
+        $this->writeBuffer .= substr($data, $bytesWritten);
+        
+        $this->updateActive();
         return true;
     }  
 

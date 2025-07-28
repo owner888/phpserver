@@ -552,7 +552,7 @@ class Worker
         $this->logger->log("acceptConnect");
         try {
             $base = $args[0]; // 获取传递的 EventBase 实例
-            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置0，不阻塞，未获取到会警告
+            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置 0，不阻塞，未获取到会警告
             // 有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理
             if (!$newSocket) return;
 
@@ -629,16 +629,34 @@ class Worker
             return false;
         }
         
-        // 直接发送原始数据，不使用HTTP格式化
-        $connection->send($response);
+        // 特殊处理：确保握手响应立即发送
+        $success = false;
         
-        // 更新连接状态为WebSocket
+        if ($connection->isValid()) {
+            // 直接发送，不使用 Connection::send 方法
+            $bytesWritten = @fwrite($connection->socket, $response);
+            $success = ($bytesWritten === strlen($response));
+            
+            if (!$success && $bytesWritten > 0) {
+                // 部分发送，将剩余部分加入缓冲区
+                $connection->writeBuffer .= substr($response, $bytesWritten);
+                $success = true; // 认为基本成功，剩余部分会由事件循环处理
+            }
+        }
+        
+        if (!$success) {
+            $this->logger->log("WebSocket握手响应发送失败");
+            return false;
+        }
+        
+        // 更新连接状态
         $connection->isWebSocket = true;
+        $connection->updateActive();
         if (isset($request['server']['HTTP_SEC_WEBSOCKET_VERSION'])) {
             $connection->webSocketVersion = $request['server']['HTTP_SEC_WEBSOCKET_VERSION'];
         }
         
-        // 触发WebSocket连接回调
+        // 触发 WebSocket 连接回调
         call_user_func($this->onWebSocketConnect, $this, $connection);
         
         return true;
