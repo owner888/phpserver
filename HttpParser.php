@@ -124,7 +124,7 @@ class HttpParser
             if (isset($result['headers']['Content-Type']) && 
                 stripos($result['headers']['Content-Type'], 'application/x-www-form-urlencoded') !== false) 
             {
-                parse_str($http_body, $_POST);
+                parse_str($http_body, $result['post']);
             }
             // 支持 application/json
             elseif (isset($result['headers']['Content-Type']) &&
@@ -171,8 +171,8 @@ class HttpParser
                                 // 普通字段
                                 $value = preg_replace('/.*?\r\n\r\n/s', '', $block, 1);
                                 $value = substr($value, 0, -2); // 去掉结尾的 \r\n
-                                // $_POST[$fieldName] = $value;
-                                $this->setMultipartValue($_POST, $fieldName, $value);
+                                // $result['post'][$fieldName] = $value;
+                                $this->setMultipartValue($result['post'], $fieldName, $value);
                             }
                         }
                     }
