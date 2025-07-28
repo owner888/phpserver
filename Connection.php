@@ -13,6 +13,7 @@ class Connection
 
     public $isWebSocket = false;
     public $webSocketVersion = null;
+    public $webSocketProtocol = null; // 存储子协议
     public $closeCode = null;   // 关闭码
     public $closeReason = null; // 关闭原因
     private $fragments = ''; // 存储分片的消息

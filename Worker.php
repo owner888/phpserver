@@ -15,6 +15,7 @@ class Worker
     public $requestNum = 0;        // 每个子进程总请求数
     public $websocketConnectionCount = 0; // WebSocket 连接计数
     private $webSocketConnections = null; // WebSocket 连接集合
+    public $sslContext = null; // SSL 上下文
 
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
@@ -148,7 +149,17 @@ class Worker
         // 主进程创建tcp服务器
         $errno = 0;
         $errmsg = '';
-        $socket = stream_socket_server($this->localSocket, $errno, $errmsg);
+        if ($this->sslContext) {
+            $socket = stream_socket_server(
+                $this->localSocket, 
+                $errno, 
+                $errmsg, 
+                STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
+                $this->sslContext
+            );
+        } else {
+            $socket = stream_socket_server($this->localSocket, $errno, $errmsg);
+        }
 
         // 尝试打开 KeepAlive TCP 和禁用 Nagle 算法
         if (function_exists('socket_import_stream')) 
@@ -544,6 +555,15 @@ class Worker
             return false;
         }
         
+        // 处理子协议协商 - 在这里添加代码
+        $protocol = '';
+        if (isset($request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL'])) {
+            $protocols = explode(',', $request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL']);
+            // 选择第一个子协议或进行更复杂的协议选择逻辑
+            $protocol = trim($protocols[0]);
+            $connection->webSocketProtocol = $protocol; // 存储选择的协议
+        }
+        
         $response = WebSocketParser::generateHandshakeResponse($request);
         if (!$response) {
             return false;
@@ -879,16 +899,10 @@ class Worker
     }
 
     /**
-     * 清理连接
+     * 清理连接资源
+     * 在连接关闭、超时或进程退出时调用
      * @param int $id 连接ID
      */
-    // 这个方法用于在连接关闭时清理资源
-    // 例如在 acceptData 中检测到连接关闭时调用
-    // 或者在子进程退出时调用
-    // 也可以在主进程收到 SIGINT 信号时调用
-    // 例如在主进程收到 SIGINT 信号时调用 cleanupConnection
-    // 或者在子进程退出时调用 cleanupConnection
-    // 或者在子进程处理完请求后调用 cleanupConnection
     private function cleanupConnection($id)
     {
         if (isset($this->connections[$id])) {
