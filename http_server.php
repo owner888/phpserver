@@ -102,7 +102,8 @@ class Worker
     public $connectionCount = 0;   // 每个子进程到连接数
     public $requestNum = 0;        // 每个子进程总请求数
     public $websocketConnectionCount = 0; // WebSocket 连接计数
-    
+    private $webSocketConnections = null; // WebSocket 连接集合
+
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
     private $forkArr = [];          // 子进程数组
@@ -119,6 +120,7 @@ class Worker
         $this->logger = $logger;
         $this->httpParser = $httpParser;
         $this->middlewareManager = new MiddlewareManager($this);
+        $this->webSocketConnections = new \SplObjectStorage();
 
         if (!$this->onMessage) 
         {
@@ -703,7 +705,9 @@ class Worker
         $connection->updateActive();
     
         // 增加 WebSocket 连接计数
-        $this->websocketConnectionCount++;
+        $this->websocketConnectionCount++;    
+        // 将连接添加到 WebSocket 连接集合
+        $this->webSocketConnections->attach($connection);
         
         // 确保 serverInfo 完整
         if (empty($connection->serverInfo)) {
@@ -939,13 +943,14 @@ class Worker
     public function broadcast($message, $opcode = WebSocketParser::OPCODE_TEXT)
     {
         $count = 0;
-        foreach ($this->connections as $connection) {
-            if ($connection->isWebSocket) {
-                if ($connection->sendWebSocket($message, $opcode)) {
-                    $count++;
-                }
+
+        // 使用专用的 WebSocket 连接集合，避免遍历所有连接
+        foreach ($this->webSocketConnections as $connection) {
+            if ($connection->sendWebSocket($message, $opcode)) {
+                $count++;
             }
         }
+        
         return $count;
     }
 
@@ -1062,6 +1067,9 @@ class Worker
             // 调用连接关闭回调（如果是WebSocket连接）
             if ($connection->isWebSocket && $this->onWebSocketClose) {
                 $this->websocketConnectionCount--;
+                // 从 WebSocket 连接集合中移除
+                $this->webSocketConnections->detach($connection);
+
                 try {
                     call_user_func($this->onWebSocketClose, $this, $connection, 1001, "Server closing connection");
                 } catch (\Throwable $e) {
