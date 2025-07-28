@@ -247,6 +247,21 @@ class Worker
      */
     private function addResourceCheckEvent($base)
     {
+        // $timeoutEvent = new Event(
+        //     $base,
+        //     -1,
+        //     Event::TIMEOUT | Event::PERSIST, function() {
+        //         foreach ($this->connections as $id => $connection) {
+        //             if (!$connection->isActive() && !$this->testConnection($connection)) 
+        //             {
+        //                 $this->logger->log("连接超时关闭: $id");
+        //                 $this->cleanupConnection($id);
+        //             }
+        //         }
+        //     }
+        // );
+        // $timeoutEvent->add(10); // 每10秒检查一次
+
         $resourceCheckEvent = new Event(
             $base,
             -1,
@@ -256,18 +271,19 @@ class Worker
                 $closed = 0;
                 
                 // 检查所有连接
-                foreach ($this->connections as $id => $connection) {
+                foreach ($this->connections as $id => $connection) 
+                {
                     // 检查连接有效性
-                    if (!$connection->isValid() || 
-                        (time() - $connection->lastActive > 300)) { // 5分钟不活跃
-
+                    if (!$connection->isValid() || !$connection->isActive()) 
+                    {
                         $this->logger->log("资源检查：关闭不活跃连接 {$id}");
                         $this->cleanupConnection($id);
                         $closed++;
                     }
                 }
                 
-                if ($closed > 0) {
+                if ($closed > 0) 
+                {
                     $this->logger->log("资源检查：共关闭 {$closed} 个连接");
                     gc_collect_cycles(); // 强制垃圾回收
                 }
