@@ -111,13 +111,13 @@ class HttpParser
         }
 
         // 添加其他服务器信息
-        $result['server']['REQUEST_METHOD'] = $result['method'];
-        $result['server']['REQUEST_URI'] = $result['path'];
+        $result['server']['REQUEST_METHOD']  = $result['method'];
+        $result['server']['REQUEST_URI']     = $result['path'];
         $result['server']['SERVER_PROTOCOL'] = $result['protocol'];
-        $result['server']['QUERY_STRING'] = isset($pathParts[1]) ? $pathParts[1] : '';
-        $result['server']['REMOTE_ADDR'] = $remoteAddress ?? '';
+        $result['server']['QUERY_STRING']    = $pathParts[1] ?? '';
+        $result['server']['REMOTE_ADDR']     = $remoteAddress ?? '';
 
-        // 处理 POST/PUT 数据
+        // 处理 POST/PUT/PATCH 数据
         if (in_array($result['method'], ['POST', 'PUT', 'PATCH'])) 
         {
             // 支持 application/x-www-form-urlencoded
@@ -141,7 +141,7 @@ class HttpParser
                 if (preg_match('/boundary=(.*)$/', $result['headers']['Content-Type'], $matches)) {
                     $boundary = '--' . $matches[1];
                     $blocks = explode($boundary, $http_body);
-                    array_pop($blocks); // 去掉最后一个空块
+                    array_pop($blocks);   // 去掉最后一个空块
                     array_shift($blocks); // 去掉第一个空块
                     foreach ($blocks as $block) {
                         if (empty(trim($block))) continue;
