@@ -67,17 +67,6 @@ $worker->parseCommand($argv);
 // 添加其他中间件
 $worker->use(new HealthCheckMiddleware($worker));
 
-switch ($command) {
-    case 'start':
-        $worker->start();
-        break;
-    case 'stop':
-    case 'reload':
-    case 'status':
-        $worker->sendSignalToMaster($command);
-        break;
-}
-
 class Worker
 {
     public $count = 1;  // 子进程数，2 最高, 可以达到 2W5; 4 低一点，2W4; 8 更低，只有 1W 多
