@@ -620,6 +620,16 @@ class Worker
      */
     public function handleWebSocketHandshake($connection, $request)
     {
+        // $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        // // 如果需要检查 Origin（CSRF 保护）
+        // if ($this->checkOrigin && $origin) {
+        //     $allowedOrigins = ['http://localhost:8080', 'https://example.com'];
+        //     if (!in_array($origin, $allowedOrigins)) {
+        //         $this->logger->log("WebSocket 请求 Origin 不被允许: $origin");
+        //         return false;
+        //     }
+        // }
+
         if (!WebSocketParser::isWebSocketHandshake($request)) {
             return false;
         }
