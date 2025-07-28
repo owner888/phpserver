@@ -62,8 +62,8 @@ $worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
     return true;
 });
 
-// 解析并执行命令
-$worker->parseCommand($argv);
-
 // 添加其他中间件
 $worker->use(new HealthCheckMiddleware($worker));
+
+// 解析并执行命令
+$worker->run();

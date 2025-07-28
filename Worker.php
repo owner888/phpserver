@@ -85,8 +85,13 @@ class Worker
      * @param array $argv 命令行参数
      * @return void
      */
-    public function parseCommand($argv)
+    public function run($argv = null)
     {
+        // 如果未提供参数，使用全局变量
+        if ($argv === null) {
+            global $argv;
+        }
+
         $command = trim($argv[1] ?? '');
         $usage = "Usage: php http_server.php {" . implode('|', $this->availableCommands) . "}\n";
         
