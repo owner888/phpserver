@@ -69,10 +69,8 @@ $worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
 $worker->onWebSocketClose(function($worker, $connection, $code, $reason) {
     $worker->logger->log("WebSocket 连接关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
 
-    // 确保记录连接数变化
-    $worker->logger->log("当前 WebSocket 连接数: " . count(array_filter($worker->connections, function($conn) {
-        return $conn->isWebSocket;
-    })));
+    // 使用计数器替代遍历
+    $worker->logger->log("当前 WebSocket 连接数: " . $worker->websocketConnectionCount);
 
     return true;
 });
@@ -103,6 +101,7 @@ class Worker
     public $connections = [];      // 用于管理所有 Connection 实例
     public $connectionCount = 0;   // 每个子进程到连接数
     public $requestNum = 0;        // 每个子进程总请求数
+    public $websocketConnectionCount = 0; // WebSocket 连接计数
     
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
     private $masterStatusFile = 'masterStatusFile.status'; // 主进程状态文件
@@ -410,16 +409,6 @@ class Worker
             // 创建异步日志记录器
             $this->logger = new AsyncLogger($base);
 
-            // // 定时统计输出
-            // $statEvent = new Event(
-            //     $base,
-            //     -1,
-            //     Event::TIMEOUT | Event::PERSIST,
-            //     function() {
-            //         $this->logger->log("当前连接数: {$this->connectionCount}, 总请求数: {$this->requestNum}");
-            //     }
-            // );
-            // $statEvent->add(5); // 每5秒输出一次
             $resourceCheckEvent = new Event(
                 $base,
                 -1,
@@ -455,6 +444,21 @@ class Worker
             );
             $resourceCheckEvent->add(10); // 每60秒检查一次
 
+            $pingEvent = new Event(
+                $base,
+                -1,
+                Event::TIMEOUT | Event::PERSIST,
+                function() {
+                    foreach ($this->connections as $connection) {
+                        if ($connection->isWebSocket && $connection->isValid()) {
+                            // 发送 ping，如果长时间未收到 pong 可以考虑关闭连接
+                            $connection->ping();
+                        }
+                    }
+                }
+            );
+            $pingEvent->add(5); // 每30秒发送一次 ping
+
             $statEvent = new Event(
                 $base,
                 -1,
@@ -462,10 +466,11 @@ class Worker
                     $memoryUsage = memory_get_usage();
                     $peakUsage = memory_get_peak_usage();
                     $this->logger->log(sprintf(
-                        "Memory: %sMB, Peak: %sMB, Connections: %d, Requests: %d", 
+                        "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
                         round($memoryUsage/1024/1024, 2),
                         round($peakUsage/1024/1024, 2),
                         $this->connectionCount, 
+                        $this->websocketConnectionCount,
                         $this->requestNum
                     ));
                 }
@@ -696,7 +701,10 @@ class Worker
         // 更新连接状态
         $connection->isWebSocket = true;
         $connection->updateActive();
-            
+    
+        // 增加 WebSocket 连接计数
+        $this->websocketConnectionCount++;
+        
         // 确保 serverInfo 完整
         if (empty($connection->serverInfo)) {
             $connection->serverInfo = [];
@@ -1053,6 +1061,7 @@ class Worker
         
             // 调用连接关闭回调（如果是WebSocket连接）
             if ($connection->isWebSocket && $this->onWebSocketClose) {
+                $this->websocketConnectionCount--;
                 try {
                     call_user_func($this->onWebSocketClose, $this, $connection, 1001, "Server closing connection");
                 } catch (\Throwable $e) {
