@@ -50,7 +50,16 @@ $worker->onWebSocketConnect(function($worker, $connection) {
 
 $worker->onWebSocketMessage(function($worker, $connection, $data, $opcode) {
     $worker->logger->log("收到 WebSocket 消息: " . $data);
-    
+    $worker->logger->log("来自: " . ($connection->serverInfo['REMOTE_ADDR'] ?? 'unknown'));
+        
+    // 如果需要访问更多信息
+    if (!empty($connection->serverInfo)) {
+        // 使用连接的 serverInfo
+        $worker->logger->log("客户端版本: " . ($connection->serverInfo['WEBSOCKET_VERSION'] ?? 'unknown'));
+        $worker->logger->log("客户端 User-Agent: " . ($connection->serverInfo['HTTP_USER_AGENT'] ?? 'unknown'));
+        $worker->logger->log("客户端 Origin: " . ($connection->serverInfo['HTTP_ORIGIN'] ?? 'unknown'));
+    }
+
     // 简单的聊天室：将消息广播给所有客户端
     $worker->broadcast($data);
     
@@ -109,10 +118,10 @@ class Worker
         if (!$this->onMessage) 
         {
             // 默认处理
-            $this->onMessage = function($worker, $connection, $parsed)
+            $this->onMessage = function($worker, $connection, $request)
             {
                 $worker->logger->log("处理连接: {$connection->id}");
-                // var_dump($_GET, $_POST, $_COOKIE, $_SESSION, $_SERVER, $_FILES);
+                print_r($request);
                 // 发送数据给客户端
                 $worker->sendData($connection, "hello world \n");
                 return true; // 表示处理完成
@@ -619,7 +628,7 @@ class Worker
      */
     public function handleWebSocketHandshake($connection, $request)
     {
-        // $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        // $origin = $request['server']['HTTP_ORIGIN'] ?? '';
         // // 如果需要检查 Origin（CSRF 保护）
         // if ($this->checkOrigin && $origin) {
         //     $allowedOrigins = ['http://localhost:8080', 'https://example.com'];
@@ -661,10 +670,26 @@ class Worker
         // 更新连接状态
         $connection->isWebSocket = true;
         $connection->updateActive();
-        if (isset($request['server']['HTTP_SEC_WEBSOCKET_VERSION'])) {
-            $connection->webSocketVersion = $request['server']['HTTP_SEC_WEBSOCKET_VERSION'];
+            
+        // 确保 serverInfo 完整
+        if (empty($connection->serverInfo)) {
+            $connection->serverInfo = [];
         }
         
+        // 补充 WebSocket 特有的服务器信息
+        $connection->serverInfo['WEBSOCKET_VERSION'] = '';
+        foreach ($request['headers'] as $key => $value) {
+            if (strtolower($key) === 'sec-websocket-version') {
+                $connection->serverInfo['WEBSOCKET_VERSION'] = $value;
+                break;
+            }
+        }
+            
+        // 确保连接信息完整
+        $connection->serverInfo['REMOTE_ADDR'] = $connection->serverInfo['REMOTE_ADDR'] ?? stream_socket_get_name($connection->socket, true);
+        $connection->serverInfo['REQUEST_TIME'] = time();
+        $connection->serverInfo['IS_WEBSOCKET'] = true;
+
         // 触发 WebSocket 连接回调
         call_user_func($this->onWebSocketConnect, $this, $connection);
         
@@ -769,6 +794,9 @@ class Worker
             $connection = $this->connections[$id];
             $connection->updateActive();
         
+            // 获取远程地址
+            $remoteAddress = stream_socket_get_name($newSocket, true);
+        
             $buffer = @fread($newSocket, 65535);
 
             if ($buffer === '' || $buffer === false) 
@@ -794,7 +822,10 @@ class Worker
 
             // HTTP请求处理
             $this->requestNum++;
-            $parsed = $this->httpParser->parse($buffer);
+            $parsed = $this->httpParser->parse($buffer, $remoteAddress);
+                
+            // 保存服务器信息到连接对象
+            $connection->serverInfo = $parsed['server'];
 
             // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
             // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);

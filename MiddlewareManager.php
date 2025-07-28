@@ -37,7 +37,13 @@ class MiddlewareManager
      * @param Connection $connection 客户端连接
      */
     public function dispatch(array $request, $connection)
-    {
+    {    
+        // 将 serverInfo 添加到请求上下文
+        if (!empty($connection->serverInfo) && empty($request['server'])) {
+            $request['server'] = $connection->serverInfo;
+        }
+
+        // 执行中间件链
         $this->process($request, $connection, 0);
     }
     

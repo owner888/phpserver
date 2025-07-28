@@ -38,90 +38,107 @@ class HttpParser
      * @param string $content 请求内容
      * @return array 解析后的数据
      */
-    public function parse($content)
+    public function parse($buffer, $remoteAddress = null)
     {
-        $_POST = $_GET = $_COOKIE = $_REQUEST = $_SESSION = $_FILES = [];
-        $_SERVER = [
-            'QUERY_STRING'         => '',
-            'REQUEST_METHOD'       => '',
-            'REQUEST_URI'          => '',
-            'SERVER_PROTOCOL'      => '',
-            'SERVER_NAME'          => '',
-            'HTTP_HOST'            => '',
-            'HTTP_USER_AGENT'      => '',
-            'HTTP_ACCEPT'          => '',
-            'HTTP_ACCEPT_LANGUAGE' => '',
-            'HTTP_ACCEPT_ENCODING' => '',
-            'HTTP_COOKIE'          => '',
-            'HTTP_CONNECTION'      => '',
-            'REMOTE_ADDR'          => '',
-            'REMOTE_PORT'          => '0',
-            'REQUEST_TIME'         => time()
+        $result = [
+            'raw' => $buffer,
+            'method' => '',
+            'path' => '',
+            'protocol' => '',
+            'headers' => [],
+            'body' => '',
+            'get' => [],
+            'post' => [],
+            'cookies' => [],
+            'server' => []  // 添加此字段存储服务器信息
         ];
+    
+        // 空请求
+        if (empty($buffer)) {
+            return $result;
+        }
 
-        // 解析头部
-        $parts = explode("\r\n\r\n", $content, 2);
+        // 分离请求头和请求体
+        $parts = explode("\r\n\r\n", $buffer, 2);
         $http_header = $parts[0] ?? '';
         $http_body = $parts[1] ?? '';
-        $header_data = explode("\r\n", $http_header);
+        $result['body'] = $http_body;
 
-        // 请求行解析
-        if (isset($header_data[0])) 
-	    {
-            $requestLine = explode(' ', $header_data[0], 3);
-            $_SERVER['REQUEST_METHOD']  = $requestLine[0] ?? '';
-            $_SERVER['REQUEST_URI']     = $requestLine[1] ?? '';
-            $_SERVER['SERVER_PROTOCOL'] = $requestLine[2] ?? '';
-        }
-        unset($header_data[0]);
-
-        // 头部解析
-        foreach ($header_data as $line) 
-        {
-            if (empty($line) || strpos($line, ':') === false) continue;
-            list($key, $value) = explode(':', $line, 2);
-            $key = str_replace('-', '_', strtoupper(trim($key)));
-            $value = trim($value);
-            $_SERVER['HTTP_' . $key] = $value;
-            if ($key === 'COOKIE') 
-            {
-                parse_str(str_replace('; ', '&', $value), $_COOKIE);
+        // 解析请求行
+        $headerLines = explode("\r\n", $http_header);
+        $requestLine = array_shift($headerLines);
+        
+        // 提取 method, path, protocol
+        if (preg_match('/^(\S+)\s+(\S+)\s+(\S+)/', $requestLine, $matches)) {
+            $result['method'] = $matches[1];
+            $fullPath = $matches[2];
+            $result['protocol'] = $matches[3];
+            
+            // 解析路径和查询参数
+            $pathParts = explode('?', $fullPath, 2);
+            $result['path'] = $pathParts[0];
+            
+            // 解析查询参数
+            if (isset($pathParts[1])) {
+                parse_str($pathParts[1], $result['get']);
             }
         }
 
-        // 查询字符串
-        $_SERVER['QUERY_STRING'] = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
-        if ($_SERVER['QUERY_STRING']) 
-        {
-            parse_str($_SERVER['QUERY_STRING'], $_GET);
-        } 
-        else 
-        {
-            $_SERVER['QUERY_STRING'] = '';
+        // 解析请求头
+        foreach ($headerLines as $line) {
+            if (strpos($line, ':') !== false) {
+                list($key, $value) = explode(':', $line, 2);
+                $key = trim($key);
+                $value = trim($value);
+                
+                $result['headers'][$key] = $value;
+                
+                // 同时设置 SERVER 信息
+                $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $key));
+                $result['server'][$serverKey] = $value;
+                
+                // 如果是 Cookie
+                if (strtolower($key) === 'cookie') {
+                    $cookies = explode(';', $value);
+                    foreach ($cookies as $cookie) {
+                        if (strpos($cookie, '=') !== false) {
+                            list($cookieKey, $cookieValue) = explode('=', trim($cookie), 2);
+                            $result['cookies'][$cookieKey] = $cookieValue;
+                        }
+                    }
+                }
+            }
         }
 
+        // 添加其他服务器信息
+        $result['server']['REQUEST_METHOD'] = $result['method'];
+        $result['server']['REQUEST_URI'] = $result['path'];
+        $result['server']['SERVER_PROTOCOL'] = $result['protocol'];
+        $result['server']['QUERY_STRING'] = isset($pathParts[1]) ? $pathParts[1] : '';
+        $result['server']['REMOTE_ADDR'] = $remoteAddress ?? '';
+
         // 处理 POST/PUT 数据
-        if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) 
+        if (in_array($result['method'], ['POST', 'PUT', 'PATCH'])) 
         {
             // 支持 application/x-www-form-urlencoded
-            if (isset($_SERVER['HTTP_CONTENT_TYPE']) && 
-                stripos($_SERVER['HTTP_CONTENT_TYPE'], 'application/x-www-form-urlencoded') !== false) 
+            if (isset($result['headers']['Content-Type']) && 
+                stripos($result['headers']['Content-Type'], 'application/x-www-form-urlencoded') !== false) 
             {
                 parse_str($http_body, $_POST);
             }
             // 支持 application/json
-            elseif (isset($_SERVER['HTTP_CONTENT_TYPE']) &&
-                stripos($_SERVER['HTTP_CONTENT_TYPE'], 'application/json') !== false) {
-                $_POST = json_decode($http_body, true) ?: [];
+            elseif (isset($result['headers']['Content-Type']) &&
+                stripos($result['headers']['Content-Type'], 'application/json') !== false) {
+                $result['post'] = json_decode($http_body, true) ?: [];
             }
             // 支持 multipart/form-data
             // 文件内容保存在 $_FILES[$field]['content']，你可自行保存到磁盘
             // 仅支持单文件和简单字段，复杂嵌套表单需进一步扩展
             // 解析 multipart/form-data 时不会自动生成临时文件，需自行处理
-            elseif (isset($_SERVER['HTTP_CONTENT_TYPE']) && 
-                stripos($_SERVER['HTTP_CONTENT_TYPE'], 'multipart/form-data') !== false) {
+            elseif (isset($result['headers']['Content-Type']) && 
+                stripos($result['headers']['Content-Type'], 'multipart/form-data') !== false) {
                 // 提取 boundary
-                if (preg_match('/boundary=(.*)$/', $_SERVER['HTTP_CONTENT_TYPE'], $matches)) {
+                if (preg_match('/boundary=(.*)$/', $result['headers']['Content-Type'], $matches)) {
                     $boundary = '--' . $matches[1];
                     $blocks = explode($boundary, $http_body);
                     array_pop($blocks); // 去掉最后一个空块
@@ -164,21 +181,14 @@ class HttpParser
             // 其他类型可扩展
         }
 
-        // 对 $_GET/$_POST/$_COOKIE 进行简单过滤
-        array_walk_recursive($_GET, function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
-        array_walk_recursive($_POST, function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
-        array_walk_recursive($_COOKIE, function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        // // 对 $_GET/$_POST/$_COOKIE 进行简单过滤
+        // array_walk_recursive($result['get'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        // array_walk_recursive($result['post'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
+        // array_walk_recursive($result['cookie'], function(&$v) { $v = htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); });
 
-        $_REQUEST = array_merge($_GET, $_POST);
+        // $result['request'] = array_merge($result['get'], $result['post']);
 
-        return [
-            'get'    => $_GET,
-            'post'   => $_POST,
-            'cookie' => $_COOKIE,
-            'server' => $_SERVER,
-            'files'  => $_FILES,
-            'body'   => $http_body
-        ];
+        return $result;
     }
 
     private function setMultipartValue(&$target, $name, $value)

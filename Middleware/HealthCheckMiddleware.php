@@ -13,7 +13,7 @@ class HealthCheckMiddleware implements MiddlewareInterface
     public function process(array $request, $connection, callable $next)
     {
         // 健康检查 URL 处理
-        if ($_SERVER['REQUEST_URI'] == '/health') {
+        if ($request['server']['REQUEST_URI'] == '/health') {
             $health = [
                 'status' => 'ok',
                 'memory' => round(memory_get_usage()/1024/1024, 2) . 'MB',
