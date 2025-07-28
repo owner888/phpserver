@@ -260,12 +260,8 @@ class Worker
                     // 检查连接有效性
                     if (!$connection->isValid() || 
                         (time() - $connection->lastActive > 300)) { // 5分钟不活跃
-                        
+
                         $this->logger->log("资源检查：关闭不活跃连接 {$id}");
-                        $this->cleanupConnection($id);
-                        $closed++;
-                    } else if (!$connection->testConnection()) {
-                        $this->logger->log("资源检查：连接测试失败 {$id}");
                         $this->cleanupConnection($id);
                         $closed++;
                     }
@@ -300,7 +296,12 @@ class Worker
             -1,
             Event::TIMEOUT | Event::PERSIST,
             function() {
-                // 现有的ping代码...
+                foreach ($this->connections as $connection) {
+                    if ($connection->isWebSocket && $connection->isValid()) {
+                        // 发送 ping，如果长时间未收到 pong 可以考虑关闭连接
+                        $connection->ping();
+                    }
+                }
             }
         );
         $pingEvent->add(5);
@@ -317,9 +318,17 @@ class Worker
         $statEvent = new Event(
             $base,
             -1,
-            Event::TIMEOUT | Event::PERSIST,
-            function() {
-                // 现有的统计代码...
+            Event::TIMEOUT | Event::PERSIST, function() {
+                $memoryUsage = memory_get_usage(true);
+                $peakUsage = memory_get_peak_usage(true);
+                $this->logger->log(sprintf(
+                    "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
+                    round($memoryUsage/1024/1024, 2),
+                    round($peakUsage/1024/1024, 2),
+                    $this->connectionCount, 
+                    $this->websocketConnectionCount,
+                    $this->requestNum
+                ));
             }
         );
         $statEvent->add(10);
