@@ -252,7 +252,36 @@ class Worker
             -1,
             Event::TIMEOUT | Event::PERSIST,
             function() {
-                // 现有的资源检查代码...
+                $this->logger->log("执行资源检查...");
+                $closed = 0;
+                
+                // 检查所有连接
+                foreach ($this->connections as $id => $connection) {
+                    // 检查连接有效性
+                    if (!$connection->isValid() || 
+                        (time() - $connection->lastActive > 300)) { // 5分钟不活跃
+                        
+                        $this->logger->log("资源检查：关闭不活跃连接 {$id}");
+                        $this->cleanupConnection($id);
+                        $closed++;
+                    } else if (!$connection->testConnection()) {
+                        $this->logger->log("资源检查：连接测试失败 {$id}");
+                        $this->cleanupConnection($id);
+                        $closed++;
+                    }
+                }
+                
+                if ($closed > 0) {
+                    $this->logger->log("资源检查：共关闭 {$closed} 个连接");
+                    gc_collect_cycles(); // 强制垃圾回收
+                }
+                
+                // 检查内存使用情况
+                $memory = memory_get_usage(true) / 1024 / 1024;
+                if ($memory > 100) { // 内存超过100MB
+                    $this->logger->log("内存使用过高: {$memory}MB，执行垃圾回收");
+                    gc_collect_cycles();
+                }
             }
         );
         $resourceCheckEvent->add(10);
