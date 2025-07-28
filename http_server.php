@@ -463,8 +463,8 @@ class Worker
                 $base,
                 -1,
                 Event::TIMEOUT | Event::PERSIST, function() {
-                    $memoryUsage = memory_get_usage();
-                    $peakUsage = memory_get_peak_usage();
+                    $memoryUsage = memory_get_usage(true);
+                    $peakUsage = memory_get_peak_usage(true);
                     $this->logger->log(sprintf(
                         "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
                         round($memoryUsage/1024/1024, 2),

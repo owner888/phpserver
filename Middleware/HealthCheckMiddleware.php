@@ -16,8 +16,8 @@ class HealthCheckMiddleware implements MiddlewareInterface
         if ($request['server']['REQUEST_URI'] == '/health') {
             $health = [
                 'status' => 'ok',
-                'memory' => round(memory_get_usage()/1024/1024, 2) . 'MB',
-                'peak_memory' => round(memory_get_peak_usage()/1024/1024, 2) . 'MB',
+                'memory' => round(memory_get_usage(true)/1024/1024, 2) . 'MB',
+                'peak_memory' => round(memory_get_peak_usage(true)/1024/1024, 2) . 'MB',
                 'connections' => $this->worker->getConnectionCount(),
                 'requests' => $this->worker->getRequestNum(),
                 'time' => date('Y-m-d H:i:s')
