@@ -120,7 +120,6 @@ class WebSocketParser
         $result['payload'] = $data;
         $result['length'] = $headerSize + $payloadLen;
         
-        var_dump($result);
         return $result;
     }
     

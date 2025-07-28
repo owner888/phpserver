@@ -663,72 +663,84 @@ class Worker
     }
     
     /**
-     * 处理WebSocket数据帧
+     * 处理 WebSocket 数据帧
      * @param Connection $connection 客户端连接
      * @param string $buffer 接收到的数据
      */
     public function handleWebSocketFrame($connection, $buffer)
     {
-        $offset = 0;
-        $bufferLen = strlen($buffer);
+        if (empty($buffer)) {
+            return; // 忽略空数据
+        }
         
-        while ($offset < $bufferLen) {
-            $frame = WebSocketParser::decode(substr($buffer, $offset));
-            if (!$frame) {
-                break;
-            }
+        try {
+            $offset = 0;
+            $bufferLen = strlen($buffer);
             
-            $offset += $frame['length'];
-            
-            switch ($frame['opcode']) {
-                case WebSocketParser::OPCODE_TEXT:
-                case WebSocketParser::OPCODE_BINARY:
-                    // 如果不是片段的最后一部分，存储片段
-                    if (!$frame['FIN']) {
+            while ($offset < $bufferLen) {
+                $frame = WebSocketParser::decode(substr($buffer, $offset));
+                if (!$frame) {
+                    break;
+                }
+                
+                $offset += $frame['length'];
+                
+                switch ($frame['opcode']) {
+                    case WebSocketParser::OPCODE_TEXT:
+                    case WebSocketParser::OPCODE_BINARY:
+                        // 如果不是片段的最后一部分，存储片段
+                        if (!$frame['FIN']) {
+                            $connection->appendFragment($frame['payload']);
+                        } else {
+                            $data = $frame['FIN'] ? $frame['payload'] : $connection->getAndClearFragments() . $frame['payload'];
+                            // 触发消息回调
+                            call_user_func($this->onWebSocketMessage, $this, $connection, $data, $frame['opcode']);
+                        }
+                        break;
+                        
+                    case WebSocketParser::OPCODE_CONTINUATION:
+                        // 处理消息的后续片段
                         $connection->appendFragment($frame['payload']);
-                    } else {
-                        $data = $frame['FIN'] ? $frame['payload'] : $connection->getAndClearFragments() . $frame['payload'];
-                        // 触发消息回调
-                        call_user_func($this->onWebSocketMessage, $this, $connection, $data, $frame['opcode']);
-                    }
-                    break;
-                    
-                case WebSocketParser::OPCODE_CONTINUATION:
-                    // 处理消息的后续片段
-                    $connection->appendFragment($frame['payload']);
-                    
-                    // 如果是最后一个片段，处理完整消息
-                    if ($frame['FIN']) {
-                        $data = $connection->getAndClearFragments();
-                        call_user_func($this->onWebSocketMessage, $this, $connection, $data, WebSocketParser::OPCODE_TEXT);
-                    }
-                    break;
-                    
-                case WebSocketParser::OPCODE_PING:
-                    // 自动回复pong
-                    $connection->pong($frame['payload']);
-                    break;
-                    
-                case WebSocketParser::OPCODE_PONG:
-                    // 可以更新活动时间
-                    $connection->updateActive();
-                    break;
-                    
-                case WebSocketParser::OPCODE_CLOSE:
-                    // 解析关闭代码和原因
-                    $code = 1000;
-                    $reason = '';
-                    if (strlen($frame['payload']) >= 2) {
-                        $code = unpack('n', substr($frame['payload'], 0, 2))[1];
-                        $reason = substr($frame['payload'], 2);
-                    }
-                    
-                    // 触发关闭回调
-                    call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
-                    
-                    // 回复关闭帧然后关闭连接
-                    $connection->close($code, $reason);
-                    break;
+                        
+                        // 如果是最后一个片段，处理完整消息
+                        if ($frame['FIN']) {
+                            $data = $connection->getAndClearFragments();
+                            call_user_func($this->onWebSocketMessage, $this, $connection, $data, WebSocketParser::OPCODE_TEXT);
+                        }
+                        break;
+                        
+                    case WebSocketParser::OPCODE_PING:
+                        // 自动回复pong
+                        $connection->pong($frame['payload']);
+                        break;
+                        
+                    case WebSocketParser::OPCODE_PONG:
+                        // 可以更新活动时间
+                        $connection->updateActive();
+                        break;
+                        
+                    case WebSocketParser::OPCODE_CLOSE:
+                        // 解析关闭代码和原因
+                        $code = 1000;
+                        $reason = '';
+                        if (strlen($frame['payload']) >= 2) {
+                            $code = unpack('n', substr($frame['payload'], 0, 2))[1];
+                            $reason = substr($frame['payload'], 2);
+                        }
+                        
+                        // 触发关闭回调
+                        call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
+                        
+                        // 回复关闭帧然后关闭连接
+                        $connection->close($code, $reason);
+                        break;
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logger->log("处理 WebSocket 帧异常: " . $e->getMessage());
+            // 考虑在异常情况下关闭连接
+            if ($connection->isValid()) {
+                $connection->close(1011, "服务器内部错误");
             }
         }
     }
