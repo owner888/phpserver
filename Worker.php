@@ -247,21 +247,6 @@ class Worker
      */
     private function addResourceCheckEvent($base)
     {
-        // $timeoutEvent = new Event(
-        //     $base,
-        //     -1,
-        //     Event::TIMEOUT | Event::PERSIST, function() {
-        //         foreach ($this->connections as $id => $connection) {
-        //             if (!$connection->isActive() && !$this->testConnection($connection)) 
-        //             {
-        //                 $this->logger->log("连接超时关闭: $id");
-        //                 $this->cleanupConnection($id);
-        //             }
-        //         }
-        //     }
-        // );
-        // $timeoutEvent->add(10); // 每10秒检查一次
-
         $resourceCheckEvent = new Event(
             $base,
             -1,
@@ -277,11 +262,6 @@ class Worker
                     if (!$connection->isValid() || !$connection->isActive() || !$connection->testConnection()) 
                     {
                         $this->logger->log("资源检查：关闭无效连接 {$id}");
-                        $this->cleanupConnection($id);
-                        $closed++;
-                    }
-                    {
-                        $this->logger->log("资源检查：关闭不活跃连接 {$id}");
                         $this->cleanupConnection($id);
                         $closed++;
                     }
@@ -480,7 +460,6 @@ class Worker
      */
     public function acceptConnect($socket, $events, $args)
     {
-        $this->logger->log("acceptConnect");
         try {
             $base = $args[0]; // 获取传递的 EventBase 实例
             $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置 0，不阻塞，未获取到会警告
@@ -592,7 +571,6 @@ class Worker
         
         // 更新连接状态
         $connection->isWebSocket = true;
-        $connection->updateActive();
     
         // 增加 WebSocket 连接计数
         $this->websocketConnectionCount++;    
@@ -689,13 +667,8 @@ class Worker
                             $code = unpack('n', substr($frame['payload'], 0, 2))[1];
                             $reason = substr($frame['payload'], 2);
                         }
-                        
-                        try {
-                            // 触发关闭回调
-                            call_user_func($this->onWebSocketClose, $this, $connection, $code, $reason);
-                        } catch (\Throwable $e) {
-                            $this->logger->log("WebSocket 关闭回调异常: " . $e->getMessage());
-                        }
+                        $connection->closeCode = $code;
+                        $connection->closeReason = $reason;
 
                         // 彻底清理连接资源
                         $this->cleanupConnection($connection->id);
@@ -928,7 +901,7 @@ class Worker
                 $this->webSocketConnections->detach($connection);
 
                 try {
-                    call_user_func($this->onWebSocketClose, $this, $connection, 1001, "Server closing connection");
+                    call_user_func($this->onWebSocketClose, $this, $connection, $connection->closeCode, $connection->closeReason);
                 } catch (\Throwable $e) {
                     $this->logger->log("WebSocket 关闭回调异常: " . $e->getMessage());
                 }
