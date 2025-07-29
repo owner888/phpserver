@@ -3,7 +3,7 @@ require_once __DIR__ . '/ProcessManager.php';
 
 class Worker
 {
-    public $count = 1;  // 子进程数，2 最高, 可以达到 2W5; 4 低一点，2W4; 8 更低，只有 1W 多
+    public $count = 4;  // 子进程数，2 最高, 可以达到 2W5; 4 低一点，2W4; 8 更低，只有 1W 多
     public $localSocket = 'tcp://0.0.0.0:2345'; // 监听地址
     public $onMessage = null; // 处理函数
     public $onWebSocketMessage = null; // WebSocket 消息处理回调
@@ -60,7 +60,6 @@ class Worker
             $this->onMessage = function($worker, $connection, $request)
             {
                 $worker->logger->log("处理连接: {$connection->id}");
-                print_r($request);
                 // 发送数据给客户端
                 $worker->sendData($connection, "hello world \n");
                 return true; // 表示处理完成
