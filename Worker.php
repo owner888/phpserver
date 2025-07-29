@@ -382,9 +382,6 @@ class Worker
                 $this->logger->log("所有连接已关闭，事件循环退出");
                 break;
             }
-            
-            // 短暂休眠，避免CPU占用过高
-            // usleep(10000); // 10ms
         }
     }
     
