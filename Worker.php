@@ -555,15 +555,6 @@ class Worker
             return false;
         }
         
-        // 处理子协议协商 - 在这里添加代码
-        $protocol = '';
-        if (isset($request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL'])) {
-            $protocols = explode(',', $request['server']['HTTP_SEC_WEBSOCKET_PROTOCOL']);
-            // 选择第一个子协议或进行更复杂的协议选择逻辑
-            $protocol = trim($protocols[0]);
-            $connection->webSocketProtocol = $protocol; // 存储选择的协议
-        }
-        
         $response = WebSocketParser::generateHandshakeResponse($request);
         if (!$response) {
             return false;
