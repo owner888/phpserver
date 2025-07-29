@@ -372,10 +372,13 @@ class Worker
      */
     private function startEventLoop($base)
     {
+        $signalCounter = 0; // 信号处理计数器
         while (!$this->exiting || !empty($this->connections)) {
-            pcntl_signal_dispatch();
+            if ($signalCounter++ % 1000 == 0) {  // 大幅减少信号检查频率
+                pcntl_signal_dispatch();
+            }
+            
             $base->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
-            pcntl_signal_dispatch();
             
             // 如果需要退出且没有连接，则退出循环
             if ($this->exiting && empty($this->connections)) {
