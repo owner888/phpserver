@@ -384,7 +384,7 @@ class Worker
             }
             
             // 短暂休眠，避免CPU占用过高
-            usleep(10000); // 10ms
+            // usleep(10000); // 10ms
         }
     }
     
