@@ -218,12 +218,14 @@ class ProcessManager
     {
         while (true)
         {
-            pcntl_signal_dispatch(); // 信号分发
             $status = 0;
-            // 阻塞直至获取子进程退出或中断信号或调用一个信号处理器
-            $pid = pcntl_wait($status, WUNTRACED); 
-            pcntl_signal_dispatch();
             
+            // 阻塞直至获取子进程退出或中断信号或调用一个信号处理器
+            $pid = pcntl_wait($status, WUNTRACED);
+
+            // 在每次循环只需要调用一次信号分发
+            pcntl_signal_dispatch();
+
             if ($pid > 0) {
                 // 子进程退出
                 $this->logger->log("子进程退出 pid: {$pid}, 状态: {$status}");
