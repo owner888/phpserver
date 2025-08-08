@@ -265,7 +265,7 @@ class EventManager
             return false;
         }
         
-        return $this->eventBase->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
+        return $this->eventBase->dispatch();
     }
     
     /**

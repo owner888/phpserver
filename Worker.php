@@ -370,7 +370,8 @@ class Worker
                 pcntl_signal_dispatch();
             }
 
-            $this->eventManager->dispatch();
+            // $this->eventManager->dispatch();
+            $this->eventManager->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
             
             // 如果需要退出且没有连接，则退出循环
             if ($this->exiting && empty($this->connections)) {
