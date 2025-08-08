@@ -251,26 +251,21 @@ class EventManager
             return false;
         }
         
-        return $this->eventBase->loop($flags);
+        return $this->eventBase->loop($flags); 
     }
     
     /**
      * 执行单次事件循环
      * 
-     * @param float $timeout 超时时间(秒)
      * @return bool 是否成功
      */
-    public function dispatch($timeout = null)
+    public function dispatch()
     {
         if ($this->stopped) {
             return false;
         }
         
-        if ($timeout !== null) {
-            return $this->eventBase->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
-        } else {
-            return $this->eventBase->dispatch();
-        }
+        return $this->eventBase->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
     }
     
     /**

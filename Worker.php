@@ -370,7 +370,7 @@ class Worker
                 pcntl_signal_dispatch();
             }
 
-            $this->eventManager->dispatch(0.001);
+            $this->eventManager->dispatch();
             
             // 如果需要退出且没有连接，则退出循环
             if ($this->exiting && empty($this->connections)) {
