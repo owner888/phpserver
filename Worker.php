@@ -263,7 +263,6 @@ class Worker
     private function addResourceCheckEvent()
     {
         $this->eventManager->addTimer(10, function() {
-            $this->logger->log("执行资源检查...");
             $closed = 0;
             
             // 检查所有连接

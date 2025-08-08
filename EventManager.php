@@ -245,17 +245,13 @@ class EventManager
      * @param float $timeout 超时时间(秒)
      * @return bool 是否成功
      */
-    public function loop($flags = 0, $timeout = null)
+    public function loop($flags = 0)
     {
         if ($this->stopped) {
             return false;
         }
         
-        if ($timeout !== null) {
-            return $this->eventBase->loop($flags, $timeout);
-        } else {
-            return $this->eventBase->loop($flags);
-        }
+        return $this->eventBase->loop($flags);
     }
     
     /**
