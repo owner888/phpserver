@@ -377,8 +377,21 @@ class Worker
                 $this->logger->log("所有连接已关闭，事件循环退出");
                 break;
             }
-            // 短暂休眠，避免CPU占用过高
-            // usleep(1000); // 10ms
+            
+            // 根据连接数动态调整休眠时间
+            if ($this->connectionCount > 1000) {
+                $sleepMicroseconds = 0; // 高负载时不休眠
+            } else if ($this->connectionCount > 100) {
+                $sleepMicroseconds = 100; // 中等负载时短暂休眠
+            } else if ($this->connectionCount > 0) {
+                $sleepMicroseconds = 500; // 低负载时稍长休眠
+            } else {
+                $sleepMicroseconds = 1000; // 无连接时较长休眠
+            }
+            
+            if ($sleepMicroseconds > 0) {
+                usleep($sleepMicroseconds);
+            }
         }
         
         // 清理所有事件
