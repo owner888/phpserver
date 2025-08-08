@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/ProcessManager.php';
+require_once __DIR__ . '/EventManager.php';
 
 class Worker
 {
@@ -26,6 +27,12 @@ class Worker
      * @var ProcessManager
      */
     private $processManager;
+            
+    /**
+     * 事件管理器
+     * @var EventManager
+     */
+    private $eventManager;
 
     /**
      * 退出标志
@@ -192,32 +199,30 @@ class Worker
         
         // 创建 EventBase 实例
         $this->eventBase = new EventBase();
-        $base = $this->eventBase;
 
         // 创建异步日志记录器
-        $this->logger = new AsyncLogger($base);
+        $this->logger = new AsyncLogger($this->eventBase);
+
+        // 创建事件管理器
+        $this->eventManager = new EventManager($this->eventBase, $this->logger);
 
         // 添加资源检查事件
-        $this->addResourceCheckEvent($base);
+        $this->addResourceCheckEvent();
         
         // 添加ping事件
-        $this->addPingEvent($base);
+        $this->addPingEvent();
         
         // 添加统计事件
-        $this->addStatEvent($base);
+        $this->addStatEvent();
 
-        // 创建并添加连接接受事件
-        $event = new Event(
-            $base,
+        // 添加连接接受事件
+        $this->eventManager->addReadEvent(
             $this->socket,
-            Event::READ | Event::PERSIST,
-            [$this, "acceptConnect"],
-            [$base]
+            [$this, "acceptConnect"]
         );
-        $event->add();
         
         // 启动事件循环
-        $this->startEventLoop($base);
+        $this->startEventLoop();
     }
         
     /**
@@ -255,43 +260,34 @@ class Worker
      * @param EventBase $base 事件基础实例
      * @return void
      */
-    private function addResourceCheckEvent($base)
+    private function addResourceCheckEvent()
     {
-        $resourceCheckEvent = new Event(
-            $base,
-            -1,
-            Event::TIMEOUT | Event::PERSIST,
-            function() {
-                $this->logger->log("执行资源检查...");
-                $closed = 0;
-                
-                // 检查所有连接
-                foreach ($this->connections as $id => $connection) 
-                {
-                    // 检查连接有效性
-                    if (!$connection->isValid() || !$connection->isActive() || !$connection->testConnection()) 
-                    {
-                        $this->logger->log("资源检查：关闭无效连接 {$id}");
-                        $this->cleanupConnection($id);
-                        $closed++;
-                    }
-                }
-                
-                if ($closed > 0) 
-                {
-                    $this->logger->log("资源检查：共关闭 {$closed} 个连接");
-                    gc_collect_cycles(); // 强制垃圾回收
-                }
-                
-                // 检查内存使用情况
-                $memory = memory_get_usage(true) / 1024 / 1024;
-                if ($memory > 100) { // 内存超过100MB
-                    $this->logger->log("内存使用过高: {$memory}MB，执行垃圾回收");
-                    gc_collect_cycles();
+        $this->eventManager->addTimer(10, function() {
+            $this->logger->log("执行资源检查...");
+            $closed = 0;
+            
+            // 检查所有连接
+            foreach ($this->connections as $id => $connection) {
+                // 检查连接有效性
+                if (!$connection->isValid() || !$connection->isActive() || !$connection->testConnection()) {
+                    $this->logger->log("资源检查：关闭无效连接 {$id}");
+                    $this->cleanupConnection($id);
+                    $closed++;
                 }
             }
-        );
-        $resourceCheckEvent->add(10);
+            
+            if ($closed > 0) {
+                $this->logger->log("资源检查：共关闭 {$closed} 个连接");
+                gc_collect_cycles(); // 强制垃圾回收
+            }
+            
+            // 检查内存使用情况
+            $memory = memory_get_usage(true) / 1024 / 1024;
+            if ($memory > 100) { // 内存超过100MB
+                $this->logger->log("内存使用过高: {$memory}MB，执行垃圾回收");
+                gc_collect_cycles();
+            }
+        });
     }
     
     /**
@@ -300,22 +296,16 @@ class Worker
      * @param EventBase $base 事件基础实例
      * @return void
      */
-    private function addPingEvent($base)
+    private function addPingEvent()
     {
-        $pingEvent = new Event(
-            $base,
-            -1,
-            Event::TIMEOUT | Event::PERSIST,
-            function() {
-                foreach ($this->connections as $connection) {
-                    if ($connection->isWebSocket && $connection->isValid()) {
-                        // 发送 ping，如果长时间未收到 pong 可以考虑关闭连接
-                        $connection->ping();
-                    }
+        $this->eventManager->addTimer(5, function() {
+            foreach ($this->connections as $connection) {
+                if ($connection->isWebSocket && $connection->isValid()) {
+                    // 发送 ping，如果长时间未收到 pong 可以考虑关闭连接
+                    $connection->ping();
                 }
             }
-        );
-        $pingEvent->add(5);
+        });
     }
     
     /**
@@ -324,25 +314,20 @@ class Worker
      * @param EventBase $base 事件基础实例
      * @return void
      */
-    private function addStatEvent($base)
+    private function addStatEvent()
     {
-        $statEvent = new Event(
-            $base,
-            -1,
-            Event::TIMEOUT | Event::PERSIST, function() {
-                $memoryUsage = memory_get_usage(true);
-                $peakUsage = memory_get_peak_usage(true);
-                $this->logger->log(sprintf(
-                    "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
-                    round($memoryUsage/1024/1024, 2),
-                    round($peakUsage/1024/1024, 2),
-                    $this->connectionCount, 
-                    $this->websocketConnectionCount,
-                    $this->requestNum
-                ));
-            }
-        );
-        $statEvent->add(10);
+        $this->eventManager->addTimer(10, function() {
+            $memoryUsage = memory_get_usage(true);
+            $peakUsage = memory_get_peak_usage(true);
+            $this->logger->log(sprintf(
+                "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
+                round($memoryUsage/1024/1024, 2),
+                round($peakUsage/1024/1024, 2),
+                $this->connectionCount, 
+                $this->websocketConnectionCount,
+                $this->requestNum
+            ));
+        });
     }
     
     /**
@@ -351,17 +336,11 @@ class Worker
      * @param EventBase $base 事件基础实例
      * @return void
      */
-    private function addExitCheckEvent($base)
+    private function addExitCheckEvent()
     {
-        $exitCheckEvent = new Event(
-            $base,
-            -1,
-            Event::TIMEOUT | Event::PERSIST,
-            function() {
-                $this->tryGracefulExit();
-            }
-        );
-        $exitCheckEvent->add(0.5);
+        $this->eventManager->addTimer(0.5, function() {
+            $this->tryGracefulExit();
+        }, [], true);
     }
     
     /**
@@ -370,22 +349,27 @@ class Worker
      * @param EventBase $base 事件基础实例
      * @return void
      */
-    private function startEventLoop($base)
+    private function startEventLoop()
     {
         $signalCounter = 0; // 信号处理计数器
         while (!$this->exiting || !empty($this->connections)) {
             if ($signalCounter++ % 1000 == 0) {  // 大幅减少信号检查频率
                 pcntl_signal_dispatch();
             }
-            
-            $base->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
+
+            $this->eventManager->dispatch(0.001);
             
             // 如果需要退出且没有连接，则退出循环
             if ($this->exiting && empty($this->connections)) {
                 $this->logger->log("所有连接已关闭，事件循环退出");
                 break;
             }
+            // 短暂休眠，避免CPU占用过高
+            // usleep(1000); // 10ms
         }
+        
+        // 清理所有事件
+        $this->eventManager->clearAllEvents();
     }
     
     /**
@@ -468,10 +452,9 @@ class Worker
      * @param $events
      * @param $arg
      */
-    public function acceptConnect($socket, $events, $args)
+    public function acceptConnect($socket, $events)
     {
         try {
-            $base = $args[0]; // 获取传递的 EventBase 实例
             $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置 0，不阻塞，未获取到会警告
             // 有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理
             if (!$newSocket) return;
@@ -497,19 +480,17 @@ class Worker
             $connection = new Connection($newSocket);
 
             // 注册读事件
-            $readEvent = new Event(
-                $base,
+            $readEventId = $this->eventManager->addReadEvent(
                 $newSocket,
-                Event::READ | Event::PERSIST, // 监听可读事件并保持持久化
                 [$this, "acceptData"],
-                [$base, $newSocket]
+                [$connection]
             );
-            // 添加事件
-            $readEvent->add();
-            $connection->readEvent = $readEvent;
+            $connection->readEventId = $readEventId;
+
+            $this->connections[$connection->id] = $connection;
             
             // 写事件先不注册，只有 send 时才注册
-            $connection->writeEvent = null;
+            // $connection->writeEvent = null;
             // // 注册写事件
             // $writeEvent = new Event(
             //     $base,
@@ -526,9 +507,8 @@ class Worker
             // );
             // $writeEvent->add();
             // $connection->event = $writeEvent;
-            $this->connections[$connection->id] = $connection;
         } catch (\Throwable $e) {
-            $this->logger->log("acceptConnect异常: " . $e->getMessage());
+            $this->logger->log("acceptConnect 异常: " . $e->getMessage());
         }
     }
 
@@ -697,36 +677,30 @@ class Worker
     /**
      * 子进程处理数据，一个 HTTP 请求可能会有多次数据到来
      * 例如：WebSocket 握手请求，或者 HTTP 请求的多次数据
-     * @param $newSocket
-     * @param $events
-     * @param $arg
+     * 
+     * @param resource $socket 连接 socket
+     * @param int $events 事件标志
+     * @param Connection $connection 连接对象
+     * @return void
      */
-    public function acceptData($newSocket, $events, $args)
+    public function acceptData($socket, $events, $connection)
     {
         try {
-            $id = (int)$newSocket;
-            if (!isset($this->connections[$id])) return;
-            $connection = $this->connections[$id];
             $connection->updateActive();
         
             // 获取远程地址
-            $remoteAddress = stream_socket_get_name($newSocket, true);
+            $remoteAddress = stream_socket_get_name($socket, true);
         
-            $buffer = @fread($newSocket, 65535);
-
-            if ($buffer === '' || $buffer === false) 
-            {
+            $buffer = @fread($socket, 65535);
+            $len = strlen($buffer);
+            if ($len === 0) {
                 // 对于 WebSocket 连接，空数据是正常的，不应立即关闭
                 if ($connection->isWebSocket) {
                     return; // WebSocket 连接读取到空数据时，不做处理继续保持连接
                 }
-
-                if (feof($newSocket) || !is_resource($newSocket)) 
-                {
-                    $this->logger->log("客户端关闭连接: " . $id);
-                    $this->cleanupConnection($id);
-                    return;
-                }
+                // 连接关闭或出错
+                $this->cleanupConnection($connection->id);
+                return;
             }
 
             // 已经是 WebSocket 连接，处理 WebSocket 帧
@@ -848,24 +822,20 @@ class Worker
         }
 
         // 注册写事件（仅当有数据时）
-        if (!empty($connection->writeBuffer) && $connection->writeEvent === null) 
+        if (!empty($connection->writeBuffer) && empty($connection->writeEventId)) 
         {
-            $writeEvent = new Event(
-                $this->eventBase,
+            $writeEventId = $this->eventManager->addWriteEvent(
                 $connection->socket,
-                Event::WRITE | Event::PERSIST,
-                function($fd, $events, $args) {
-                    $conn = $args[0];
+                function($fd, $events, $conn) {
                     $conn->flush();
                     if (empty($conn->writeBuffer)) {
-                        $conn->writeEvent->del();
-                        $conn->writeEvent = null;
+                        $this->eventManager->removeEvent($conn->writeEventId);
+                        $conn->writeEventId = null;
                     }
                 },
                 [$connection]
             );
-            $writeEvent->add();
-            $connection->writeEvent = $writeEvent;
+            $connection->writeEventId = $writeEventId;
         }
         return true;
     }
@@ -898,12 +868,23 @@ class Worker
         if (isset($this->connections[$id])) {
             $connection = $this->connections[$id];
         
+            // 移除连接的所有事件
+            if (!empty($connection->readEventId)) {
+                $this->eventManager->removeEvent($connection->readEventId);
+                $connection->readEventId = null;
+            }
+            
+            if (!empty($connection->writeEventId)) {
+                $this->eventManager->removeEvent($connection->writeEventId);
+                $connection->writeEventId = null;
+            }
+            
             // 调用连接关闭回调（如果是WebSocket连接）
             if ($connection->isWebSocket && $this->onWebSocketClose) {
                 $this->websocketConnectionCount--;
                 // 从 WebSocket 连接集合中移除
                 $this->webSocketConnections->detach($connection);
-
+                
                 try {
                     call_user_func($this->onWebSocketClose, $this, $connection, $connection->closeCode, $connection->closeReason);
                 } catch (\Throwable $e) {

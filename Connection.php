@@ -8,6 +8,8 @@ class Connection
     public $readBuffer = '';
     public $readEvent = null;
     public $writeEvent = null;
+    public $readEventId = null;  // 读事件ID
+    public $writeEventId = null; // 写事件ID
     private $maxBufferSize = 10485760; // 10MB
     private $connectionTimeout = 60;   // 60秒
 

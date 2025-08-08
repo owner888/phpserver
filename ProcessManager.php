@@ -219,7 +219,7 @@ class ProcessManager
         while (true)
         {
             $status = 0;
-            
+
             // 阻塞直至获取子进程退出或中断信号或调用一个信号处理器
             $pid = pcntl_wait($status, WUNTRACED);
 
@@ -322,6 +322,7 @@ class ProcessManager
             __DIR__ . '/MiddlewareManager.php',
             __DIR__ . '/Context.php',
             __DIR__ . '/WebSocketParser.php',
+            __DIR__ . '/EventManager.php', 
             __DIR__ . '/Middleware/HealthCheckMiddleware.php',
             __DIR__ . '/Middleware/WebSocketMiddleware.php',
             __DIR__ . '/Middleware/AuthMiddleware.php',
