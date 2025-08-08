@@ -319,14 +319,28 @@ class Worker
         $this->eventManager->addTimer(10, function() {
             $memoryUsage = memory_get_usage(true);
             $peakUsage = memory_get_peak_usage(true);
+            
+            // 添加内存使用趋势分析
+            static $lastUsage = 0;
+            $memoryDiff = $memoryUsage - $lastUsage;
+            $lastUsage = $memoryUsage;
+            
+            $trend = $memoryDiff > 0 ? "↑" : "↓";
+            
             $this->logger->log(sprintf(
-                "Memory: %sMB, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
+                "Memory: %sMB %s, Peak: %sMB, Connections: %d, WebSocket: %d, Requests: %d", 
                 round($memoryUsage/1024/1024, 2),
+                $trend,
                 round($peakUsage/1024/1024, 2),
                 $this->connectionCount, 
                 $this->websocketConnectionCount,
                 $this->requestNum
             ));
+            
+            // 内存增长过快检测
+            if ($memoryDiff > 5 * 1024 * 1024) { // 5MB增长
+                $this->logger->log("警告：内存使用增长过快，可能存在内存泄漏");
+            }
         });
     }
     
