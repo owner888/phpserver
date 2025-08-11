@@ -364,34 +364,14 @@ class Worker
      */
     private function startEventLoop()
     {
-        $signalCounter = 0; // 信号处理计数器
         while (!$this->exiting || !empty($this->connections)) {
-            if ($signalCounter++ % 1000 == 0) {  // 大幅减少信号检查频率
-                pcntl_signal_dispatch();
-            }
-
-            // $this->eventManager->dispatch();
-            $this->eventManager->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
-            
+            pcntl_signal_dispatch();
+            // $this->eventManager->loop(EventBase::LOOP_ONCE | EventBase::LOOP_NONBLOCK);
+            $this->eventManager->loop(EventBase::LOOP_ONCE);
             // 如果需要退出且没有连接，则退出循环
             if ($this->exiting && empty($this->connections)) {
                 $this->logger->log("所有连接已关闭，事件循环退出");
                 break;
-            }
-            
-            // 根据连接数动态调整休眠时间
-            if ($this->connectionCount > 1000) {
-                $sleepMicroseconds = 0; // 高负载时不休眠
-            } else if ($this->connectionCount > 100) {
-                $sleepMicroseconds = 100; // 中等负载时短暂休眠
-            } else if ($this->connectionCount > 0) {
-                $sleepMicroseconds = 500; // 低负载时稍长休眠
-            } else {
-                $sleepMicroseconds = 1000; // 无连接时较长休眠
-            }
-            
-            if ($sleepMicroseconds > 0) {
-                usleep($sleepMicroseconds);
             }
         }
         
