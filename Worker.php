@@ -357,7 +357,7 @@ class Worker
     }
     
     /**
-     * 启动事件循环
+     * 启动事件循环，所有事件处理，包括信号处理、定时器、连接事件等
      * 
      * @param EventBase $base 事件基础实例
      * @return void
