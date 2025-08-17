@@ -455,6 +455,8 @@ class Worker
 
     /**
      * 子进程接受连接
+     * 惊群效应 (有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理)
+     * 
      * @param $socket
      * @param $events
      * @param $arg
@@ -462,8 +464,7 @@ class Worker
     public function acceptConnect($socket, $events)
     {
         try {
-            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 第二个参数设置 0，不阻塞，未获取到会警告
-            // 有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理
+            $newSocket = @stream_socket_accept($socket, 0, $remote_address); // 0 不阻塞
             if (!$newSocket) return;
 
             if ($this->connectionCount >= $this->maxConnections) 
@@ -495,25 +496,6 @@ class Worker
             $connection->readEventId = $readEventId;
 
             $this->connections[$connection->id] = $connection;
-            
-            // 写事件先不注册，只有 send 时才注册
-            // $connection->writeEvent = null;
-            // // 注册写事件
-            // $writeEvent = new Event(
-            //     $base,
-            //     $newSocket,
-            //     Event::WRITE | Event::PERSIST,
-            //     function($fd, $events, $args) {
-            //         $connection = $args[0];
-            //         $connection->flush();
-            //         if (empty($connection->writeBuffer)) {
-            //             $connection->event->del();
-            //         }
-            //     },
-            //     [$connection]
-            // );
-            // $writeEvent->add();
-            // $connection->event = $writeEvent;
         } catch (\Throwable $e) {
             $this->logger->log("acceptConnect 异常: " . $e->getMessage());
         }
