@@ -99,6 +99,7 @@ class Worker
 
     /**
      * 解析并执行命令
+     * 
      * @param array $argv 命令行参数
      * @return void
      */
@@ -130,6 +131,7 @@ class Worker
 
     /**
      * 添加中间件
+     * 
      * @param MiddlewareInterface|callable $middleware
      * @return $this
      */
@@ -190,7 +192,7 @@ class Worker
     /**
      * 启动工作进程
      * 
-     * @param resource $socket 监听socket
+     * @param resource $socket 监听 socket
      * @return void
      */
     public function runWorker($socket)
@@ -255,9 +257,50 @@ class Worker
     }
 
     /**
+     * 添加退出检查事件
+     * 
+     * @return void
+     */
+    private function addExitCheckEvent()
+    {
+        $this->eventManager->addTimer(0.5, function() {
+            $this->tryGracefulExit();
+        }, [], true);
+    }
+
+    // 新增方法
+    private function tryGracefulExit()
+    {
+        try {
+            // 优雅退出时，可以先关闭所有空闲连接
+            $idleConnections = [];
+            foreach ($this->connections as $id => $connection) {
+                if ($connection->isIdle()) {
+                    $idleConnections[] = $id;
+                }
+            }
+            
+            // 先关闭所有空闲连接
+            foreach ($idleConnections as $id) {
+                $this->cleanupConnection($id);
+            }
+            
+            // 检查剩余连接
+            if (empty($this->connections)) {
+                $this->logger->log("所有连接处理完毕，进程安全退出");
+                exit(0);
+            }
+            
+            return; // 还有未处理完的连接
+        } catch (\Throwable $e) {
+            $this->logger->log("优雅退出异常: " . $e->getMessage());
+            exit(1); // 异常退出
+        }
+    }
+
+    /**
      * 添加资源检查事件
      * 
-     * @param EventBase $base 事件基础实例
      * @return void
      */
     private function addResourceCheckEvent()
@@ -292,7 +335,6 @@ class Worker
     /**
      * 添加ping事件
      * 
-     * @param EventBase $base 事件基础实例
      * @return void
      */
     private function addPingEvent()
@@ -310,7 +352,6 @@ class Worker
     /**
      * 添加统计事件
      * 
-     * @param EventBase $base 事件基础实例
      * @return void
      */
     private function addStatEvent()
@@ -344,22 +385,8 @@ class Worker
     }
     
     /**
-     * 添加退出检查事件
-     * 
-     * @param EventBase $base 事件基础实例
-     * @return void
-     */
-    private function addExitCheckEvent()
-    {
-        $this->eventManager->addTimer(0.5, function() {
-            $this->tryGracefulExit();
-        }, [], true);
-    }
-    
-    /**
      * 启动事件循环，所有事件处理，包括信号处理、定时器、连接事件等
      * 
-     * @param EventBase $base 事件基础实例
      * @return void
      */
     private function startEventLoop()
@@ -423,43 +450,12 @@ class Worker
         exit;
     }
 
-    // 新增方法
-    private function tryGracefulExit()
-    {
-        try {
-            // 优雅退出时，可以先关闭所有空闲连接
-            $idleConnections = [];
-            foreach ($this->connections as $id => $connection) {
-                if ($connection->isIdle()) {
-                    $idleConnections[] = $id;
-                }
-            }
-            
-            // 先关闭所有空闲连接
-            foreach ($idleConnections as $id) {
-                $this->cleanupConnection($id);
-            }
-            
-            // 检查剩余连接
-            if (empty($this->connections)) {
-                $this->logger->log("所有连接处理完毕，进程安全退出");
-                exit(0);
-            }
-            
-            return; // 还有未处理完的连接
-        } catch (\Throwable $e) {
-            $this->logger->log("优雅退出异常: " . $e->getMessage());
-            exit(1); // 异常退出
-        }
-    }
-
     /**
      * 子进程接受连接
      * 惊群效应 (有一个连接过来时，子进程都会触发本函数，但只有一个子进程获取到连接并处理)
      * 
      * @param $socket
      * @param $events
-     * @param $arg
      */
     public function acceptConnect($socket, $events)
     {
@@ -502,12 +498,65 @@ class Worker
     }
 
     /**
+     * 子进程处理数据，一个 HTTP 请求可能会有多次数据到来
+     * 例如：WebSocket 握手请求，或者 HTTP 请求的多次数据
+     * 
+     * @param resource $socket 连接 socket
+     * @param int $events 事件标志
+     * @param Connection $connection 连接对象
+     * @return void
+     */
+    public function acceptData($socket, $events, $connection)
+    {
+        try {
+            $connection->updateActive();
+        
+            // 获取远程地址
+            $remoteAddress = stream_socket_get_name($socket, true);
+        
+            $buffer = @fread($socket, 65535);
+            $len = strlen($buffer);
+            if ($len === 0) {
+                // 对于 WebSocket 连接，空数据是正常的，不应立即关闭
+                if ($connection->isWebSocket) {
+                    return; // WebSocket 连接读取到空数据时，不做处理继续保持连接
+                }
+                // 连接关闭或出错
+                $this->cleanupConnection($connection->id);
+                return;
+            }
+
+            // 已经是 WebSocket 连接，处理 WebSocket 帧
+            if ($connection->isWebSocket) {
+                $this->handleWebSocketFrame($connection, $buffer);
+                return;
+            }
+
+            // HTTP请求处理
+            $this->requestNum++;
+            $parsed = $this->httpParser->parse($buffer, $remoteAddress);
+                
+            // 保存服务器信息到连接对象
+            $connection->serverInfo = $parsed['server'];
+
+            // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
+            // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
+            // 使用中间件处理请求
+            $this->middlewareManager->dispatch($parsed, $connection);
+        } catch (\Throwable $e) {
+            $this->logger->log("acceptData异常: " . $e->getMessage());
+        }
+    }
+
+    /**
      * 处理 WebSocket 握手
+     * 
      * @param Connection $connection 客户端连接
-     * @param array $request HTTP请求数据
+     * @param array $request HTTP 请求数据
+     * 
      * @return bool 是否处理成功
      */
-    public function handleWebSocketHandshake($connection, $request)
+    public function handleWebSocketHandshake(Connection $connection, array $request)
     {
         // $origin = $request['server']['HTTP_ORIGIN'] ?? '';
         // // 如果需要检查 Origin（CSRF 保护）
@@ -583,14 +632,13 @@ class Worker
     
     /**
      * 处理 WebSocket 数据帧
+     * 
      * @param Connection $connection 客户端连接
      * @param string $buffer 接收到的数据
      */
-    public function handleWebSocketFrame($connection, $buffer)
+    public function handleWebSocketFrame(Connection $connection, $buffer)
     {
-        if (empty($buffer)) {
-            return; // 忽略空数据
-        }
+        if (empty($buffer)) return;
         
         try {
             $offset = 0;
@@ -598,9 +646,7 @@ class Worker
             
             while ($offset < $bufferLen) {
                 $frame = WebSocketParser::decode(substr($buffer, $offset));
-                if (!$frame) {
-                    break;
-                }
+                if (!$frame) break;
                 
                 $offset += $frame['length'];
                 
@@ -611,7 +657,9 @@ class Worker
                         if (!$frame['FIN']) {
                             $connection->appendFragment($frame['payload']);
                         } else {
-                            $data = $frame['FIN'] ? $frame['payload'] : $connection->getAndClearFragments() . $frame['payload'];
+                            $data = $frame['FIN']
+                                ? $frame['payload']
+                                : $connection->getAndClearFragments() . $frame['payload'];
                             // 触发消息回调
                             call_user_func($this->onWebSocketMessage, $this, $connection, $data, $frame['opcode']);
                         }
@@ -660,80 +708,7 @@ class Worker
             if ($connection->isValid()) {
                 $connection->close(1011, "服务器内部错误");
             }
-        }
-    }
-
-    /**
-     * 子进程处理数据，一个 HTTP 请求可能会有多次数据到来
-     * 例如：WebSocket 握手请求，或者 HTTP 请求的多次数据
-     * 
-     * @param resource $socket 连接 socket
-     * @param int $events 事件标志
-     * @param Connection $connection 连接对象
-     * @return void
-     */
-    public function acceptData($socket, $events, $connection)
-    {
-        try {
-            $connection->updateActive();
-        
-            // 获取远程地址
-            $remoteAddress = stream_socket_get_name($socket, true);
-        
-            $buffer = @fread($socket, 65535);
-            $len = strlen($buffer);
-            if ($len === 0) {
-                // 对于 WebSocket 连接，空数据是正常的，不应立即关闭
-                if ($connection->isWebSocket) {
-                    return; // WebSocket 连接读取到空数据时，不做处理继续保持连接
-                }
-                // 连接关闭或出错
-                $this->cleanupConnection($connection->id);
-                return;
-            }
-
-            // 已经是 WebSocket 连接，处理 WebSocket 帧
-            if ($connection->isWebSocket) {
-                $this->handleWebSocketFrame($connection, $buffer);
-                return;
-            }
-
-            // HTTP请求处理
-            $this->requestNum++;
-            $parsed = $this->httpParser->parse($buffer, $remoteAddress);
-                
-            // 保存服务器信息到连接对象
-            $connection->serverInfo = $parsed['server'];
-
-            // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
-            // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
-            // 使用中间件处理请求
-            $this->middlewareManager->dispatch($parsed, $connection);
-
-            // TCP 服务器
-            // $buffer = fread($newSocket, 1024);
-            // if ($buffer === '' || $buffer === false)
-            // {
-            //     if (feof($newSocket) || !is_resource($newSocket) || $buffer === false)
-            //     {
-            //         $this->logger->log("客户端关闭连接");
-            //         // 删除事件对象
-            //         if (isset($this->connectionEvents[$socketId]))
-            //         {
-            //             $this->connectionEvents[$socketId]->del();
-            //             unset($this->connectionEvents[$socketId]);
-            //         }
-            //         @fclose($newSocket);
-            //     }
-            // }
-            // else
-            // {
-            //     $this->logger->log("获取客户端数据: " . $buffer);
-            //     // 直接发送数据
-            //     fwrite($newSocket, "hello client\n");
-            // }
-        } catch (\Throwable $e) {
-            $this->logger->log("acceptData异常: " . $e->getMessage());
+            $this->cleanupConnection($connection->id);
         }
     }
 
