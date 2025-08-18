@@ -15,7 +15,7 @@ class Worker
     public $connectionCount = 0;   // 每个子进程到连接数
     public $requestNum = 0;        // 每个子进程总请求数
     public $websocketConnectionCount = 0; // WebSocket 连接计数
-    private $webSocketConnections = null; // WebSocket 连接集合
+    public $webSocketConnections = null;  // WebSocket 连接集合
     public $sslContext = null; // SSL 上下文
 
     private $masterPidFile = 'masterPidFile.pid'; // 主进程pid
@@ -253,7 +253,7 @@ class Worker
         }
         
         // 添加退出检查事件
-        $this->addExitCheckEvent($this->eventBase);
+        $this->addExitCheckEvent();
     }
 
     /**
