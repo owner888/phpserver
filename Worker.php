@@ -550,32 +550,6 @@ class Worker
 
             // WebSocket 升级检测（不走中间件）
             $hdrs = array_change_key_case($parsed['headers'], CASE_LOWER);
-            $isUpgrade = ($hdrs['upgrade'] ?? '') === 'websocket';
-            $hasConnUpgrade = strpos($hdrs['connection'] ?? '', 'upgrade') !== false;
-
-            if ($isUpgrade && $hasConnUpgrade) {
-                if ($this->handleWebSocketHandshake($connection, $parsed)) {
-                    return;
-                }
-                $this->sendData($connection, "Bad Request", 400);
-                $this->cleanupConnection($connection->id);
-                return;
-            }
-
-            // 直接调用业务回调（HTTP 不走 middleware）
-            $this->requestNum++;
-            if (is_callable($this->onMessage)) {
-                // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
-                call_user_func($this->onMessage, $this, $connection, $parsed);
-            }
-
-            // Keep-Alive 管理
-            $httpVer = $parsed['http_version'] ?? '1.1';
-            $connHdr = strtolower($hdrs['connection'] ?? '');
-            $shouldClose = ($httpVer === '1.0') ? ($connHdr !== 'keep-alive') : ($connHdr === 'close');
-            if ($shouldClose) {
-                $this->cleanupConnection($connection->id);
-            }
 
             // 保存服务器信息到连接对象
             // [
@@ -614,10 +588,33 @@ class Worker
             ];
             // print_r($connection->serverInfo);
 
-            // HTTP请求处理
-            // $this->requestNum++;
-            // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
-            // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
+            $isUpgrade = ($hdrs['upgrade'] ?? '') === 'websocket';
+            $hasConnUpgrade = strpos($hdrs['connection'] ?? '', 'upgrade') !== false;
+
+            if ($isUpgrade && $hasConnUpgrade) {
+                if ($this->handleWebSocketHandshake($connection, $parsed)) {
+                    return;
+                }
+                $this->sendData($connection, "Bad Request", 400);
+                $this->cleanupConnection($connection->id);
+                return;
+            }
+
+            // 直接调用业务回调（HTTP 不走 middleware）
+            $this->requestNum++;
+            if (is_callable($this->onMessage)) {
+                // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
+                call_user_func($this->onMessage, $this, $connection, $parsed);
+            }
+
+            // Keep-Alive 管理
+            $httpVer = $parsed['http_version'] ?? '1.1';
+            $connHdr = strtolower($hdrs['connection'] ?? '');
+            $shouldClose = ($httpVer === '1.0') ? ($connHdr !== 'keep-alive') : ($connHdr === 'close');
+            if ($shouldClose) {
+                $this->cleanupConnection($connection->id);
+            }
+            
             // 使用中间件处理请求
             // $this->middlewareManager->dispatch($parsed, $connection);
         } catch (\Throwable $e) {
