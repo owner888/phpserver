@@ -480,6 +480,12 @@ class Worker
             if (function_exists('stream_set_write_buffer')) {
                 stream_set_write_buffer($newSocket, 0);
             }
+            // 为每个连接设置 TCP 选项（更稳定的延迟/复用）
+            if (function_exists('socket_import_stream')) {
+                $sock = socket_import_stream($newSocket);
+                @socket_set_option($sock, SOL_SOCKET, SO_KEEPALIVE, 1);
+                @socket_set_option($sock, SOL_TCP, TCP_NODELAY, 1);
+            }
 
             $connection = new Connection($newSocket);
 
@@ -517,9 +523,8 @@ class Worker
             $buffer = @fread($socket, 65535);
             $len = strlen($buffer);
             if ($len === 0) {
-                // 对于 WebSocket 连接，空数据是正常的，不应立即关闭
                 if ($connection->isWebSocket) {
-                    return; // WebSocket 连接读取到空数据时，不做处理继续保持连接
+                    return; // WS 空读保持连接
                 }
                 // 连接关闭或出错
                 $this->cleanupConnection($connection->id);
@@ -532,13 +537,19 @@ class Worker
                 return;
             }
 
-            // HTTP请求处理
-            $this->requestNum++;
+            // HTTP 解析
             $parsed = $this->httpParser->parse($buffer, $remoteAddress);
+            if (!$parsed || empty($parsed['headers'])) {
+                // 简化：请求无效或不完整，直接关闭（在 ab 场景下更利于吞吐）
+                $this->cleanupConnection($connection->id);
+                return;
+            }
                 
             // 保存服务器信息到连接对象
             $connection->serverInfo = $parsed['server'];
 
+            // HTTP请求处理
+            $this->requestNum++;
             // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
             // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
             // 使用中间件处理请求
