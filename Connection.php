@@ -67,7 +67,7 @@ class Connection
      * 
      * @return bool 连接正常返回true，连接异常返回false
      */
-    private function testConnection()
+    public function testConnection()
     {
         // 检查socket是否可读可写
         $read = [$this->socket];

@@ -68,9 +68,7 @@ class Worker
         if (!$this->onMessage) 
         {
             // 默认处理
-            $this->onMessage = function($worker, $connection, $request)
-            {
-                $worker->logger->log("处理连接: {$connection->id}");
+            $this->onMessage = function($worker, $connection, $request) {
                 // 发送数据给客户端
                 $worker->sendData($connection, "hello world \n");
                 return true; // 表示处理完成
@@ -78,24 +76,24 @@ class Worker
         }
 
         // 设置默认 WebSocket 消息处理回调
-        if (!$this->onWebSocketMessage) {
+        if (!$this->onWebSocketMessage) 
+        {
             $this->onWebSocketMessage = function($worker, $connection, $data) {
-                $worker->logger->log("WebSocket 消息: " . $data);
                 $connection->sendWebSocket("Echo: " . $data);
                 return true;
             };
         }
         
-        if (!$this->onWebSocketConnect) {
+        if (!$this->onWebSocketConnect) 
+        {
             $this->onWebSocketConnect = function($worker, $connection) {
-                $worker->logger->log("WebSocket 连接已建立: " . $connection->id);
                 return true;
             };
         }
         
-        if (!$this->onWebSocketClose) {
+        if (!$this->onWebSocketClose) 
+        {
             $this->onWebSocketClose = function($worker, $connection, $code, $reason) {
-                $worker->logger->log("WebSocket 连接已关闭: " . $connection->id . ", 代码: $code, 原因: $reason");
                 return true;
             };
         }
@@ -602,10 +600,12 @@ class Worker
 
             // 直接调用业务回调（HTTP 不走 middleware）
             $this->requestNum++;
-            if (is_callable($this->onMessage)) {
-                // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
-                call_user_func($this->onMessage, $this, $connection, $parsed);
-            }
+            // 使用中间件处理请求
+            $this->middlewareManager->dispatch($parsed, $connection);
+            // if (is_callable($this->onMessage)) {
+            //     // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
+            //     call_user_func($this->onMessage, $this, $connection, $parsed);
+            // }
 
             // Keep-Alive 管理
             $httpVer = $parsed['http_version'] ?? '1.1';
@@ -614,9 +614,6 @@ class Worker
             if ($shouldClose) {
                 $this->cleanupConnection($connection->id);
             }
-            
-            // 使用中间件处理请求
-            // $this->middlewareManager->dispatch($parsed, $connection);
         } catch (\Throwable $e) {
             $this->logger->log("acceptData异常: " . $e->getMessage());
         }

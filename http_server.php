@@ -30,6 +30,14 @@ $worker = new Worker(new Logger(), new HttpParser());
 $worker->use(new WebSocketMiddleware($worker));
 
 // 设置 WebSocket 连接回调
+$worker->onMessage = function($worker, $connection, $request) {
+    print_r($request);
+    // 发送数据给客户端
+    $worker->sendData($connection, "hello world \n");
+    return true; // 表示处理完成
+};
+
+// 设置 WebSocket 连接回调
 $worker->onWebSocketConnect(function($worker, $connection) {
     $worker->logger->log("新 WebSocket 连接: " . $connection->id);
     $connection->sendWebSocket("欢迎使用 WebSocket 服务!");
