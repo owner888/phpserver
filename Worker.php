@@ -620,10 +620,6 @@ class Worker
         //         return false;
         //     }
         // }
-
-        if (!WebSocketParser::isWebSocketHandshake($request)) {
-            return false;
-        }
         
         $response = WebSocketParser::generateHandshakeResponse($request);
         if (!$response) {
