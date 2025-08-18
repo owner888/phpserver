@@ -33,10 +33,11 @@ class MiddlewareManager
     
     /**
      * 执行中间件链
+     * 
      * @param array $request 解析后的HTTP请求
      * @param Connection $connection 客户端连接
      */
-    public function dispatch(array $request, $connection)
+    public function dispatch(array $request, Connection $connection)
     {    
         // 将 serverInfo 添加到请求上下文
         if (!empty($connection->serverInfo) && empty($request['server'])) {
@@ -54,7 +55,7 @@ class MiddlewareManager
      * @param int $index 当前中间件索引
      * @return mixed
      */
-    protected function process(array $request, $connection, int $index)
+    protected function process(array $request, Connection $connection, int $index)
     {
         // 所有中间件处理完后，执行默认处理
         if ($index >= count($this->middlewares)) {

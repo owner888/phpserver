@@ -40,6 +40,10 @@ class Worker
      */
     private $exiting = false;       // 进程是否退出中
     private $maxConnections = 1024; // 最大连接数
+    /**
+     * HTTP 解析器
+     * @var HttpParser
+     */
     private $httpParser;
     private $middlewareManager;
     private $eventBase;
@@ -517,26 +521,25 @@ class Worker
         try {
             $connection->updateActive();
         
-            // 获取远程地址
-            $remoteAddress = stream_socket_get_name($socket, true);
-        
             $buffer = @fread($socket, 65535);
             $len = strlen($buffer);
             if ($len === 0) {
                 if ($connection->isWebSocket) {
                     return; // WS 空读保持连接
                 }
-                // 连接关闭或出错
+                // HTTP 连接关闭或出错
                 $this->cleanupConnection($connection->id);
                 return;
             }
 
-            // 已经是 WebSocket 连接，处理 WebSocket 帧
+            // WebSocket 直通，处理 WebSocket 帧
             if ($connection->isWebSocket) {
                 $this->handleWebSocketFrame($connection, $buffer);
                 return;
             }
 
+            // 获取远程地址
+            $remoteAddress = stream_socket_get_name($socket, true);
             // HTTP 解析
             $parsed = $this->httpParser->parse($buffer, $remoteAddress);
             if (!$parsed || empty($parsed['headers'])) {
@@ -544,16 +547,79 @@ class Worker
                 $this->cleanupConnection($connection->id);
                 return;
             }
-                
+
+            // WebSocket 升级检测（不走中间件）
+            $hdrs = array_change_key_case($parsed['headers'], CASE_LOWER);
+            $isUpgrade = ($hdrs['upgrade'] ?? '') === 'websocket';
+            $hasConnUpgrade = strpos($hdrs['connection'] ?? '', 'upgrade') !== false;
+
+            if ($isUpgrade && $hasConnUpgrade) {
+                if ($this->handleWebSocketHandshake($connection, $parsed)) {
+                    return;
+                }
+                $this->sendData($connection, "Bad Request", 400);
+                $this->cleanupConnection($connection->id);
+                return;
+            }
+
+            // 直接调用业务回调（HTTP 不走 middleware）
+            $this->requestNum++;
+            if (is_callable($this->onMessage)) {
+                // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
+                call_user_func($this->onMessage, $this, $connection, $parsed);
+            }
+
+            // Keep-Alive 管理
+            $httpVer = $parsed['http_version'] ?? '1.1';
+            $connHdr = strtolower($hdrs['connection'] ?? '');
+            $shouldClose = ($httpVer === '1.0') ? ($connHdr !== 'keep-alive') : ($connHdr === 'close');
+            if ($shouldClose) {
+                $this->cleanupConnection($connection->id);
+            }
+
             // 保存服务器信息到连接对象
-            $connection->serverInfo = $parsed['server'];
+            // [
+            //     [DOCUMENT_ROOT] => /Users/kaka/Development/owner/phpserver/test
+            //     [REMOTE_ADDR] => 127.0.0.1
+            //     [REMOTE_PORT] => 54201
+            //     [SERVER_SOFTWARE] => PHP/8.4.10 (Development Server)
+            //     [SERVER_PROTOCOL] => HTTP/1.1
+            //     [SERVER_NAME] => 127.0.0.1
+            //     [SERVER_PORT] => 3456
+            //     [REQUEST_URI] => /
+            //     [REQUEST_METHOD] => GET
+            //     [SCRIPT_NAME] => /index.php
+            //     [SCRIPT_FILENAME] => /Users/kaka/Development/owner/phpserver/test/index.php
+            //     [PHP_SELF] => /index.php
+            //     [HTTP_HOST] => 127.0.0.1:3456
+            //     [HTTP_USER_AGENT] => curl/8.7.1
+            //     [HTTP_ACCEPT] => */*
+            //     [REQUEST_TIME_FLOAT] => 1755481595.2997
+            //     [REQUEST_TIME] => 1755481595
+            // ]
+            // $connection->serverInfo = $parsed['server'];
+            $connection->serverInfo = [
+                'REQUEST_METHOD'      => $parsed['method'] ?? '',
+                'REQUEST_URI'         => $parsed['path'] ?? '',
+                'SERVER_PROTOCOL'     => 'HTTP/' . ($parsed['http_version'] ?? '1.1'),
+                'HTTP_HOST'           => $hdrs['host'] ?? '',
+                'REMOTE_ADDR'         => $remoteAddress,
+                'REQUEST_TIME'        => time(),
+                'REQUEST_TIME_FLOAT'  => microtime(true),
+                'QUERY_STRING'        => $parsed['query_string'] ?? '',
+                'CONTENT_TYPE'        => $hdrs['content-type'] ?? '',
+                'CONTENT_LENGTH'      => $hdrs['content-length'] ?? '0',
+                'HTTP_USER_AGENT'     => $hdrs['user-agent'] ?? '',
+                'HTTP_CONNECTION'     => $hdrs['connection'] ?? '',
+            ];
+            // print_r($connection->serverInfo);
 
             // HTTP请求处理
-            $this->requestNum++;
+            // $this->requestNum++;
             // 注意：移除直接调用 onMessage 的代码，因为它现在是中间件链的一部分
             // call_user_func_array($this->onMessage, [$this, $connection, $parsed]);
             // 使用中间件处理请求
-            $this->middlewareManager->dispatch($parsed, $connection);
+            // $this->middlewareManager->dispatch($parsed, $connection);
         } catch (\Throwable $e) {
             $this->logger->log("acceptData异常: " . $e->getMessage());
         }
@@ -615,11 +681,6 @@ class Worker
         $this->websocketConnectionCount++;    
         // 将连接添加到 WebSocket 连接集合
         $this->webSocketConnections->attach($connection);
-        
-        // 确保 serverInfo 完整
-        if (empty($connection->serverInfo)) {
-            $connection->serverInfo = [];
-        }
         
         // 补充 WebSocket 特有的服务器信息
         $connection->serverInfo['WEBSOCKET_VERSION'] = '';

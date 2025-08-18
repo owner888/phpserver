@@ -34,7 +34,7 @@ class HttpParser
     }
 
     /**
-     * HTTP请求解析
+     * HTTP 请求解析
      * @param string $content 请求内容
      * @return array 解析后的数据
      */
