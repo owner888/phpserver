@@ -538,7 +538,7 @@ class Worker
 
             // 获取远程地址
             $remoteAddress = stream_socket_get_name($socket, true);
-            // HTTP 解析
+            // HTTP 解析 (WebSocket 也属于 HTTP)
             $parsed = $this->httpParser->parse($buffer, $remoteAddress);
             if (!$parsed || empty($parsed['headers'])) {
                 // 简化：请求无效或不完整，直接关闭（在 ab 场景下更利于吞吐）
@@ -585,27 +585,9 @@ class Worker
                 'HTTP_CONNECTION'     => $hdrs['connection'] ?? '',
             ];
             // print_r($connection->serverInfo);
-
-            $isUpgrade = ($hdrs['upgrade'] ?? '') === 'websocket';
-            $hasConnUpgrade = strpos($hdrs['connection'] ?? '', 'upgrade') !== false;
-
-            if ($isUpgrade && $hasConnUpgrade) {
-                if ($this->handleWebSocketHandshake($connection, $parsed)) {
-                    return;
-                }
-                $this->sendData($connection, "Bad Request", 400);
-                $this->cleanupConnection($connection->id);
-                return;
-            }
-
-            // 直接调用业务回调（HTTP 不走 middleware）
             $this->requestNum++;
-            // 使用中间件处理请求
+            // 使用中间件处理 HTTP、WebSocket 请求
             $this->middlewareManager->dispatch($parsed, $connection);
-            // if (is_callable($this->onMessage)) {
-            //     // 你的 onMessage 回调里调用 $worker->sendData($connection, ...) 即可
-            //     call_user_func($this->onMessage, $this, $connection, $parsed);
-            // }
 
             // Keep-Alive 管理
             $httpVer = $parsed['http_version'] ?? '1.1';

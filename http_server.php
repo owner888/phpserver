@@ -31,7 +31,6 @@ $worker->use(new WebSocketMiddleware($worker));
 
 // 设置 WebSocket 连接回调
 $worker->onMessage = function($worker, $connection, $request) {
-    print_r($request);
     // 发送数据给客户端
     $worker->sendData($connection, "hello world \n");
     return true; // 表示处理完成
